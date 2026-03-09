@@ -21,6 +21,7 @@ import faostat_mcp.client as client_module
 from faostat_mcp.client import (
     FAOSTATAuthError,
     FAOSTATRateLimitError,
+    TokenManager,
     _is_token_expired,
     faostat_get,
 )
@@ -194,3 +195,137 @@ async def test_faostat_get_data_limit_zero_disables_truncation():
         result = json.loads(await faostat_get_data(domain_code="QCL", limit=0))
     assert "_truncated" not in result
     assert len(result) == 1000
+
+
+# ---------------------------------------------------------------------------
+# /auth/login endpoint — token refresh via the FAOSTAT backend
+# ---------------------------------------------------------------------------
+
+_BASE_URL = "https://faostatservices.fao.org/api/v1"
+_AUTH_URL = f"{_BASE_URL}/auth/login"
+
+
+def _make_auth_response(token: str) -> dict:
+    """Build the AuthenticationResult payload returned by /auth/login."""
+    return {
+        "AuthenticationResult": {
+            "AccessToken": token,
+            "ExpiresIn": 3600,
+            "IdToken": "id-token-value",
+            "RefreshToken": "refresh-token-value",
+            "TokenType": "Bearer",
+        },
+        "ChallengeParameters": {},
+    }
+
+
+@respx.mock
+async def test_login_via_auth_endpoint_succeeds():
+    """_login() POSTs form-encoded credentials to /auth/login and returns AccessToken."""
+    fresh_token = _make_jwt(int(time.time()) + 3600)
+    respx.post(_AUTH_URL).mock(
+        return_value=httpx.Response(200, json=_make_auth_response(fresh_token))
+    )
+    tm = TokenManager(base_url=_BASE_URL, username="user@example.com", password="secret")
+    token = await tm._login()
+    assert token == fresh_token
+
+
+@respx.mock
+async def test_login_via_auth_endpoint_sends_form_encoded_body():
+    """_login() must use application/x-www-form-urlencoded (not JSON)."""
+    fresh_token = _make_jwt(int(time.time()) + 3600)
+    captured = {}
+
+    def capture(request):
+        captured["content_type"] = request.headers.get("content-type", "")
+        captured["body"] = request.content.decode()
+        return httpx.Response(200, json=_make_auth_response(fresh_token))
+
+    respx.post(_AUTH_URL).mock(side_effect=capture)
+    tm = TokenManager(base_url=_BASE_URL, username="user@example.com", password="secret")
+    await tm._login()
+
+    assert "application/x-www-form-urlencoded" in captured["content_type"]
+    assert "username=user%40example.com" in captured["body"] or "username=user@example.com" in captured["body"]
+    assert "password=secret" in captured["body"]
+
+
+@respx.mock
+async def test_login_via_auth_endpoint_raises_auth_error_on_401():
+    """_login() raises FAOSTATAuthError when /auth/login returns 401."""
+    respx.post(_AUTH_URL).mock(return_value=httpx.Response(401))
+    tm = TokenManager(base_url=_BASE_URL, username="wrong@example.com", password="bad")
+    with pytest.raises(FAOSTATAuthError, match="invalid username or password"):
+        await tm._login()
+
+
+@respx.mock
+async def test_login_via_auth_endpoint_raises_auth_error_on_400():
+    """_login() raises FAOSTATAuthError when /auth/login returns 400 (bad request)."""
+    respx.post(_AUTH_URL).mock(return_value=httpx.Response(400, json={"detail": "Bad Request"}))
+    tm = TokenManager(base_url=_BASE_URL, username="user@example.com", password="wrong")
+    with pytest.raises(FAOSTATAuthError, match="invalid username or password"):
+        await tm._login()
+
+
+@respx.mock
+async def test_get_token_triggers_auth_endpoint_when_token_expired():
+    """get_token() calls /auth/login when the stored token is expired."""
+    fresh_token = _make_jwt(int(time.time()) + 3600)
+    respx.post(_AUTH_URL).mock(
+        return_value=httpx.Response(200, json=_make_auth_response(fresh_token))
+    )
+    tm = TokenManager(
+        base_url=_BASE_URL,
+        token=_EXPIRED_TOKEN,
+        username="user@example.com",
+        password="secret",
+    )
+    token = await tm.get_token()
+    assert token == fresh_token
+
+
+@respx.mock
+async def test_force_refresh_uses_auth_endpoint():
+    """force_refresh() fetches a new token from /auth/login and updates internal state."""
+    fresh_token = _make_jwt(int(time.time()) + 3600)
+    respx.post(_AUTH_URL).mock(
+        return_value=httpx.Response(200, json=_make_auth_response(fresh_token))
+    )
+    tm = TokenManager(
+        base_url=_BASE_URL,
+        token=_EXPIRED_TOKEN,
+        username="user@example.com",
+        password="secret",
+    )
+    refreshed = await tm.force_refresh()
+    assert refreshed == fresh_token
+    assert tm._token == fresh_token
+
+
+@respx.mock
+async def test_faostat_get_auto_refreshes_via_auth_endpoint_on_401():
+    """faostat_get() transparently refreshes via /auth/login when the API returns 401."""
+    fresh_token = _make_jwt(int(time.time()) + 3600)
+
+    # First API call → 401; second (after refresh) → 200
+    api_route = respx.get("https://faostatservices.fao.org/api/v1/ping")
+    api_route.side_effect = [
+        httpx.Response(401, text="Unauthorized"),
+        httpx.Response(200, json={"status": "ok"}),
+    ]
+    respx.post(_AUTH_URL).mock(
+        return_value=httpx.Response(200, json=_make_auth_response(fresh_token))
+    )
+
+    # Seed the module-level manager with credentials so auto-refresh is enabled
+    client_module._token_manager = TokenManager(
+        base_url=_BASE_URL,
+        token=_VALID_TOKEN,
+        username="user@example.com",
+        password="secret",
+    )
+
+    result = await faostat_get("/ping")
+    assert result == {"status": "ok"}
