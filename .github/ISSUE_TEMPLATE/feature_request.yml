@@ -1,0 +1,53 @@
+name: Feature Request
+description: Propose a new tool, endpoint, or improvement
+title: "feat: <short description>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve faostat-mcp! Please describe your idea in enough detail for maintainers and the community to evaluate it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What limitation or missing capability is this feature addressing?
+      placeholder: "Currently there is no way to query FAOSTAT bulk downloads via the MCP server, which means..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe what you would like to happen. Be as specific as possible — include tool names, parameters, or API endpoints if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any workarounds or alternative approaches you have already tried or thought about.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area of change
+      options:
+        - MCP tool (new or updated)
+        - FAOSTAT API client
+        - Authentication / token management
+        - Documentation
+        - Testing
+        - CI/CD
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links to FAOSTAT API docs, related issues, or any other helpful context.
