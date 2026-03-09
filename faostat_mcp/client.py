@@ -1,7 +1,7 @@
 """
 FAOSTAT HTTP client for the MCP server.
 Rate-limited to 2 req/s, with automatic retries on transport and 5xx errors,
-and transparent JWT token refresh via AWS Cognito InitiateAuth.
+and transparent JWT token refresh via the FAOSTAT /auth/login endpoint.
 """
 
 import asyncio
@@ -22,10 +22,6 @@ logger = logging.getLogger("faostat_mcp")
 
 BASE_URL = os.getenv("FAOSTAT_BASE_URL", "https://faostatservices.fao.org/api/v1")
 DEFAULT_LANG = os.getenv("FAOSTAT_DEFAULT_LANG", "en")
-
-# Cognito user pool for token refresh (prod)
-_COGNITO_URL = "https://cognito-idp.eu-west-1.amazonaws.com/"
-_COGNITO_CLIENT_ID = os.getenv("FAOSTAT_COGNITO_CLIENT_ID", "2csltsigao85ivhp6ojp1aic7o")
 
 _DEFAULT_PARAMS = {"caching": "true"}
 
@@ -66,7 +62,7 @@ def _is_token_expired(token: str, buffer_seconds: int = 60) -> bool:
 
 
 class TokenManager:
-    """Manages JWT tokens with automatic refresh via AWS Cognito InitiateAuth."""
+    """Manages JWT tokens with automatic refresh via the FAOSTAT /auth/login endpoint."""
 
     def __init__(
         self,
@@ -86,32 +82,21 @@ class TokenManager:
         return bool(self._username and self._password)
 
     async def _login(self) -> str:
-        """Call AWS Cognito InitiateAuth to obtain a fresh access token."""
-        logger.info("Token expired or missing — authenticating via Cognito InitiateAuth …")
+        """POST credentials to /auth/login to obtain a fresh access token."""
+        logger.info("Token expired or missing — authenticating via /auth/login …")
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                _COGNITO_URL,
-                headers={
-                    "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
-                    "Content-Type": "application/x-amz-json-1.1",
-                },
-                json={
-                    "AuthFlow": "USER_PASSWORD_AUTH",
-                    "ClientId": _COGNITO_CLIENT_ID,
-                    "AuthParameters": {
-                        "USERNAME": self._username,
-                        "PASSWORD": self._password,
-                    },
+                f"{self._base_url}/auth/login",
+                data={
+                    "username": self._username,
+                    "password": self._password,
                 },
             )
-            if resp.status_code == 400:
-                body = resp.json()
-                err_type = body.get("__type", "")
-                if "NotAuthorized" in err_type or "UserNotFound" in err_type:
-                    raise FAOSTATAuthError(
-                        "Login failed — invalid username or password. "
-                        "Check FAOSTAT_USERNAME and FAOSTAT_PASSWORD in your .env file."
-                    )
+            if resp.status_code in (400, 401):
+                raise FAOSTATAuthError(
+                    "Login failed — invalid username or password. "
+                    "Check FAOSTAT_USERNAME and FAOSTAT_PASSWORD in your .env file."
+                )
             resp.raise_for_status()
             data = resp.json()
             access_token = data["AuthenticationResult"]["AccessToken"]
