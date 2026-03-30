@@ -12,7 +12,8 @@ Run as a module (for Claude Desktop config):
 """
 
 import json
-import os
+import sys
+import logging
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -23,12 +24,21 @@ from .client import (
     faostat_post,
     DEFAULT_LANG,
     _get_token_manager,
+    HybridCaching,
     FAOSTATAuthError,
     FAOSTATRateLimitError,
     FAOSTATServerError,
 )
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        force=True, 
+    )
 
 # Initialise the FastMCP server
 mcp = FastMCP(
@@ -42,6 +52,12 @@ mcp = FastMCP(
     ),
 )
 
+# Initialise the HybridCaching Manager
+caching_manager = HybridCaching(
+    mem_cache_ttl= 1200,
+    redis_cache_ttl= 1800,
+    max_mem_cache_size= 256,
+)
 
 # ---------------------------------------------------------------------------
 # Health
@@ -97,7 +113,14 @@ async def faostat_list_groups(lang: str = DEFAULT_LANG) -> str:
         lang: Language code (default: 'en')
     """
     try:
+        # Check memory Cache
+        arg_dict = {'lang':lang}
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/groups/")
+        # Save to memory Cache
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
     except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
@@ -113,9 +136,14 @@ async def faostat_groups_and_domains(lang: str = DEFAULT_LANG) -> str:
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {'lang':lang}
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/groupsanddomains")
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -130,9 +158,14 @@ async def faostat_list_domains(group_code: str, lang: str = DEFAULT_LANG) -> str
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {'group_code':group_code,'lang':lang}
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/domains/{group_code}/")
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -148,9 +181,14 @@ async def faostat_get_dimensions(domain_code: str, lang: str = DEFAULT_LANG) -> 
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {'domain_code': domain_code, 'lang': lang}
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/dimensions/{domain_code}/")
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -186,9 +224,18 @@ async def faostat_get_codes(
         → Returns country/area codes: 2=Afghanistan, 3=Albania, etc.
     """
     try:
+        arg_dict = {
+            'dimension_id': dimension_id, 
+            'domain_code': domain_code, 
+            'lang': lang,
+            }
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/codes/{dimension_id}/{domain_code}")
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -256,6 +303,30 @@ async def faostat_get_data(
         faostat_get_data('FS', area_cs='AFRICA')
     """
     try:
+        arg_dict = { 
+            'domain_code': domain_code, 
+            'lang': lang,
+            'area': area,
+            'element': element,
+            'item': item,
+            'year': year,
+            'area_cs': area_cs,
+            'element_cs': element_cs,
+            'item_cs': item_cs,
+            'year_cs': year_cs,
+            'show_codes': show_codes,
+            'show_unit':  show_unit,
+            'show_flags': show_flags,
+            'null_values': null_values,
+            'limit': limit,
+            }
+        if caching_manager.redis_conn:
+            cached_val = caching_manager.get_redis_cache(sys._getframe().f_code.co_name, arg_dict)
+        else:
+            cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
+        
         params: dict[str, Any] = {
             "show_codes": show_codes,
             "show_unit": show_unit,
@@ -272,23 +343,31 @@ async def faostat_get_data(
                 params[key] = val
 
         result = await faostat_get(f"/{lang}/data/{domain_code}/", params=params)
+        arg_dict.update({'total':len(result)})
 
         # Apply row limit to prevent context window overflow
         if limit > 0:
             if isinstance(result, list):
                 total = len(result)
                 if total > limit:
-                    return json.dumps({
+                    arg_dict.update({'total':total})
+                    result = {
                         "data": result[:limit],
                         "_truncated": True,
                         "_total_rows": total,
                         "_returned_rows": limit,
                         "_hint": f"Results truncated. Use faostat_get_datasize to check size, then filter further or increase limit.",
-                    })
+                    }
+                    if caching_manager.redis_conn:
+                        caching_manager.set_redis_cache(sys._getframe().f_code.co_name, arg_dict, result)
+                    else:
+                        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
+                    return json.dumps(result)
             elif isinstance(result, dict) and isinstance(result.get("data"), list):
                 data = result["data"]
                 total = len(data)
                 if total > limit:
+                    arg_dict.update({'total':total})
                     result = {
                         **result,
                         "data": data[:limit],
@@ -297,9 +376,12 @@ async def faostat_get_data(
                         "_returned_rows": limit,
                         "_hint": f"Results truncated. Use faostat_get_datasize to check size, then filter further or increase limit.",
                     }
-
+        if caching_manager.redis_conn:
+            caching_manager.set_redis_cache(sys._getframe().f_code.co_name, arg_dict, result)
+        else:
+            caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -334,6 +416,24 @@ async def faostat_get_datasize(
         year_cs: Year code set name
     """
     try:
+        arg_dict = {
+            'domain_code': domain_code, 
+            'lang': lang,
+            'area': area,
+            'element': element,
+            'item': item,
+            'year': year,
+            'area_cs': area_cs,
+            'element_cs': element_cs,
+            'item_cs': item_cs,
+            'year_cs': year_cs,
+            }
+        if caching_manager.redis_conn:
+            cached_val = caching_manager.get_redis_cache(sys._getframe().f_code.co_name, arg_dict)
+        else:
+            cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         payload: dict[str, Any] = {"domain_code": domain_code}
         for key, val in [
             ("area", area), ("element", element), ("item", item), ("year", year),
@@ -343,8 +443,12 @@ async def faostat_get_datasize(
             if val is not None:
                 payload[key] = val
         result = await faostat_post(f"/{lang}/datasize/", json=payload)
+        if caching_manager.redis_conn:
+            caching_manager.set_redis_cache(sys._getframe().f_code.co_name, arg_dict, result)
+        else:
+            caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -362,9 +466,17 @@ async def faostat_get_definitions(domain_code: str, lang: str = DEFAULT_LANG) ->
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {
+            'domain_code': domain_code, 
+            'lang': lang,
+            }
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/definitions/domain/{domain_code}")
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -383,9 +495,18 @@ async def faostat_get_definitions_by_type(
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {
+            'domain_code': domain_code, 
+            'definition_type': definition_type, 
+            'lang': lang,
+            }
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/definitions/domain/{domain_code}/{definition_type}")
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -398,9 +519,14 @@ async def faostat_definition_types(lang: str = DEFAULT_LANG) -> str:
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {'lang': lang}
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/definitions/types")
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -415,9 +541,17 @@ async def faostat_get_metadata(domain_code: str, lang: str = DEFAULT_LANG) -> st
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {
+            'domain_code': domain_code,
+            'lang': lang,
+            }
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/metadata/{domain_code}")
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -431,9 +565,17 @@ async def faostat_get_metadata_print(domain_code: str, lang: str = DEFAULT_LANG)
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {
+            'domain_code': domain_code,
+            'lang': lang,
+            }
+        cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/metadata_print/{domain_code}")
+        caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -452,9 +594,23 @@ async def faostat_list_bulk_downloads(domain_code: str, lang: str = DEFAULT_LANG
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {
+            'domain_code': domain_code,
+            'lang': lang,
+            }
+        if caching_manager.redis_conn:
+            cached_val = caching_manager.get_redis_cache(sys._getframe().f_code.co_name, arg_dict)
+        else:
+            cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/bulkdownloads/{domain_code}/")
+        if caching_manager.redis_conn:
+            caching_manager.set_redis_cache(sys._getframe().f_code.co_name, arg_dict, result)
+        else:
+            caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -468,9 +624,23 @@ async def faostat_list_documents(domain_code: str, lang: str = DEFAULT_LANG) -> 
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {
+            'domain_code': domain_code,
+            'lang': lang,
+            }
+        if caching_manager.redis_conn:
+            cached_val = caching_manager.get_redis_cache(sys._getframe().f_code.co_name, arg_dict)
+        else:
+            cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/documents/{domain_code}/")
+        if caching_manager.redis_conn:
+            caching_manager.set_redis_cache(sys._getframe().f_code.co_name, arg_dict, result)
+        else:
+            caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -508,6 +678,20 @@ async def faostat_get_rankings(
         → Top 10 maize-producing countries in 2022
     """
     try:
+        arg_dict = {
+            'domain_code': domain_code,
+            'element_code': element_code,
+            'item_code': item_code,
+            'year': year,
+            'lang': lang,
+            'limit': limit,
+            }
+        if caching_manager.redis_conn:
+            cached_val = caching_manager.get_redis_cache(sys._getframe().f_code.co_name, arg_dict)
+        else:
+            cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         payload: dict[str, Any] = {
             "domain_code": domain_code,
             "element_code": element_code,
@@ -516,8 +700,12 @@ async def faostat_get_rankings(
             "limit": limit,
         }
         result = await faostat_post(f"/{lang}/rankings/", json=payload)
+        if caching_manager.redis_conn:
+            caching_manager.set_redis_cache(sys._getframe().f_code.co_name, arg_dict, result)
+        else:
+            caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -535,9 +723,21 @@ async def faostat_get_report_data(payload: dict[str, Any], lang: str = DEFAULT_L
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {'lang': lang}
+        arg_dict.update(payload)
+        if caching_manager.redis_conn:
+            cached_val = caching_manager.get_redis_cache(sys._getframe().f_code.co_name, arg_dict)
+        else:
+            cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_post(f"/{lang}/report/data/", json=payload)
+        if caching_manager.redis_conn:
+            caching_manager.set_redis_cache(sys._getframe().f_code.co_name, arg_dict, result)
+        else:
+            caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
@@ -551,9 +751,21 @@ async def faostat_get_report_headers(payload: dict[str, Any], lang: str = DEFAUL
         lang: Language code (default: 'en')
     """
     try:
+        arg_dict = {'lang': lang}
+        arg_dict.update(payload)
+        if caching_manager.redis_conn:
+            cached_val = caching_manager.get_redis_cache(sys._getframe().f_code.co_name, arg_dict)
+        else:
+            cached_val = caching_manager.get_mem_cache(sys._getframe().f_code.co_name, arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
         result = await faostat_post(f"/{lang}/report/headers/", json=payload)
+        if caching_manager.redis_conn:
+            caching_manager.set_redis_cache(sys._getframe().f_code.co_name, arg_dict, result)
+        else:
+            caching_manager.set_mem_cache(sys._getframe().f_code.co_name, arg_dict, result)
         return json.dumps(result)
-    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError, Exception) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
 
