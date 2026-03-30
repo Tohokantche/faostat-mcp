@@ -51,6 +51,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io) is an open standar
 - Built-in **rate limiting** (2 req/s) — safe for the FAOSTAT production API out of the box
 - **Auto-retry** with exponential backoff on transient network errors
 - Rich tool descriptions so the AI knows exactly when and how to call each tool
+- **Hybrid and distributed caching** mechanism for efficiency and higher performance
 - Works with **Claude Desktop, Claude Code, Cursor, Windsurf, Zed**, and any MCP-compatible client
 
 ---
@@ -64,6 +65,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io) is an open standar
 - Any MCP-compatible client (Claude Desktop, Cursor, Windsurf, Zed, or a custom agent)
 
 ### Install
+#### 1. Install the package
 
 ```bash
 git clone https://github.com/berba-q/faostat-mcp.git
@@ -71,7 +73,14 @@ cd faostat-mcp
 pip install -e .
 ```
 
-### Configure
+#### 2. Install docker desktop on your machine
+
+- On Windows use [this link](https://docs.docker.com/desktop/setup/install/windows-install/)
+- On Mac use [this link](https://docs.docker.com/desktop/setup/install/mac-install/)
+- On Windows use [this link](https://docs.docker.com/desktop/setup/install/linux/)
+
+
+#### 3. Configure
 
 ```bash
 cp .env.example .env
@@ -79,8 +88,19 @@ cp .env.example .env
 # FAOSTAT_API_TOKEN=your_token_here
 # FAOSTAT_USERNAME=your_username
 # FAOSTAT_PASSWORD=your_password
-```
 
+# Edit .env and add/use the default REDIS CACHE server config :
+# REDIS_HOST_IP_ADDRESS=your_redis_server_ip
+# REDIS_HOST_PORT_NUMBER=your_redis_server_port
+# REDIS_DATABASE=your_redis_server_database
+# REDIS_USERNAME=your_redis_server_username
+# REDIS_PASSWORD=your_redis_server_password
+```
+#### 4. Use docker to lunch a <a href="https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/docker/"> Redis </a> server with the default configuration
+
+```bash
+docker run -p 6379:6379 -it redis/redis-stack:latest
+```
 ---
 
 ## Running the Server
