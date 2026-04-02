@@ -141,12 +141,13 @@ class HybridCaching:
     def __remove_expired_mem_cache(self):
         """Search and remove expired cache elements to free up memory."""
         oldest_expiry = HybridCaching.min_heap_ttl[0][0] if HybridCaching.min_heap_ttl else None
-        if oldest_expiry:
-            while time.time() > oldest_expiry:
-                oldest_expiry, oldest_user_token, oldest_cache_key = heapq.heappop(HybridCaching.min_heap_ttl)
-                # Remove expired element from the cache
-                del HybridCaching.user_caches[oldest_user_token][oldest_cache_key]
-                oldest_expiry = HybridCaching.min_heap_ttl[0][0] if HybridCaching.min_heap_ttl else None
+        while oldest_expiry:
+            if not (time.time() > oldest_expiry):
+                return
+            oldest_expiry, oldest_user_token, oldest_cache_key = heapq.heappop(HybridCaching.min_heap_ttl)
+            # Remove expired element from the cache
+            del HybridCaching.user_caches[oldest_user_token][oldest_cache_key]
+            oldest_expiry = HybridCaching.min_heap_ttl[0][0] if HybridCaching.min_heap_ttl else None
         
         # Prevent cache to grow indefinitely by constraining its size
         while len(HybridCaching.user_caches) > self.MAX_CACHE_SIZE:
