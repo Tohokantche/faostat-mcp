@@ -13,6 +13,7 @@ Run as a module (for Claude Desktop config):
 
 import json
 import sys
+import os
 import logging
 from typing import Any
 
@@ -53,11 +54,14 @@ mcp = FastMCP(
 )
 
 # Initialise the HybridCaching Manager
-caching_manager = HybridCaching(
-    mem_cache_ttl= 1200,
-    redis_cache_ttl= 1800,
-    max_mem_cache_size= 256,
-)
+try:
+    caching_manager = HybridCaching(
+        mem_cache_ttl = int(os.getenv("MEM_CACHE_TTL","1200")),
+        redis_cache_ttl = int(os.getenv("REDIS_CACHE_TTL","1800")),
+        max_mem_cache_size = int(os.getenv("MAX_MEM_CACHE_SIZE","256")),
+    )
+except ValueError as error_msg:
+     caching_manager = HybridCaching()
 
 # ---------------------------------------------------------------------------
 # Health
