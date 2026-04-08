@@ -26,7 +26,10 @@ from faostat_mcp.client import (
     faostat_get,
 )
 from faostat_mcp.server import (
+    _format_rows,
+    faostat_get_codes,
     faostat_get_data,
+    faostat_get_rankings,
     faostat_list_groups,
     faostat_ping,
 )
@@ -176,7 +179,7 @@ async def test_faostat_get_data_truncates_dict_with_data_key():
     with patch("faostat_mcp.server.faostat_get", return_value=big_response):
         result = json.loads(await faostat_get_data(domain_code="QCL", limit=500))
     assert result["_truncated"] is True
-    assert len(result["data"]) == 500
+    assert result["_returned_rows"] == 500
 
 
 async def test_faostat_get_data_no_truncation_when_under_limit():
@@ -184,7 +187,7 @@ async def test_faostat_get_data_no_truncation_when_under_limit():
     small_list = [{"row": i} for i in range(10)]
     with patch("faostat_mcp.server.faostat_get", return_value=small_list):
         result = json.loads(await faostat_get_data(domain_code="QCL", limit=500))
-    assert "_truncated" not in result
+    assert isinstance(result, list)
     assert result == small_list
 
 
@@ -193,7 +196,7 @@ async def test_faostat_get_data_limit_zero_disables_truncation():
     big_list = [{"row": i} for i in range(1000)]
     with patch("faostat_mcp.server.faostat_get", return_value=big_list):
         result = json.loads(await faostat_get_data(domain_code="QCL", limit=0))
-    assert "_truncated" not in result
+    assert isinstance(result, list)
     assert len(result) == 1000
 
 
@@ -329,3 +332,192 @@ async def test_faostat_get_auto_refreshes_via_auth_endpoint_on_401():
 
     result = await faostat_get("/ping")
     assert result == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# _format_rows helper — pure unit tests
+# ---------------------------------------------------------------------------
+
+_SAMPLE_ROWS = [
+    {"Area": "India", "Item": "Wheat", "Year": 2024, "Value": "109590000"},
+    {"Area": "USA", "Item": "Wheat", "Year": 2024, "Value": "49691000"},
+    {"Area": "China", "Item": "Wheat", "Year": 2024, "Value": "136590000"},
+]
+
+
+def test_format_rows_objects():
+    """'objects' format returns the original JSON array."""
+    result = json.loads(_format_rows(_SAMPLE_ROWS, response_format="objects"))
+    assert result == _SAMPLE_ROWS
+
+
+def test_format_rows_compact():
+    """'compact' format returns columns + rows arrays."""
+    result = json.loads(_format_rows(_SAMPLE_ROWS, response_format="compact"))
+    assert result["columns"] == ["Area", "Item", "Year", "Value"]
+    assert len(result["rows"]) == 3
+    assert result["rows"][0] == ["India", "Wheat", 2024, "109590000"]
+
+
+def test_format_rows_csv():
+    """'csv' format returns plain CSV text with header."""
+    result = _format_rows(_SAMPLE_ROWS, response_format="csv")
+    lines = result.strip().split("\n")
+    assert lines[0] == "Area,Item,Year,Value"
+    assert lines[1] == "India,Wheat,2024,109590000"
+    assert len(lines) == 4  # header + 3 data rows
+
+
+def test_format_rows_csv_with_commas_in_values():
+    """CSV correctly quotes values containing commas."""
+    rows = [{"Area": "China, mainland", "Value": "100"}]
+    result = _format_rows(rows, response_format="csv")
+    lines = result.strip().split("\n")
+    assert '"China, mainland"' in lines[1]
+
+
+def test_format_rows_field_selection():
+    """fields parameter filters to specified columns."""
+    result = json.loads(_format_rows(_SAMPLE_ROWS, fields=["Area", "Value"]))
+    assert list(result[0].keys()) == ["Area", "Value"]
+    assert len(result[0]) == 2
+
+
+def test_format_rows_field_selection_with_compact():
+    """fields + compact format returns filtered columns."""
+    result = json.loads(_format_rows(
+        _SAMPLE_ROWS, response_format="compact", fields=["Area", "Value"]
+    ))
+    assert result["columns"] == ["Area", "Value"]
+    assert result["rows"][0] == ["India", "109590000"]
+
+
+def test_format_rows_empty_list():
+    """Empty input returns '[]' regardless of format."""
+    assert _format_rows([], response_format="objects") == "[]"
+    assert _format_rows([], response_format="compact") == "[]"
+    assert _format_rows([], response_format="csv") == "[]"
+
+
+def test_format_rows_invalid_fields_ignored():
+    """Non-existent field names fall back to all columns."""
+    result = json.loads(_format_rows(_SAMPLE_ROWS, fields=["NonExistent"]))
+    # All original columns retained when no valid fields match
+    assert list(result[0].keys()) == ["Area", "Item", "Year", "Value"]
+
+
+# ---------------------------------------------------------------------------
+# faostat_get_data — response format integration
+# ---------------------------------------------------------------------------
+
+async def test_faostat_get_data_default_limit_is_50():
+    """Default limit is now 50 (not 500)."""
+    big_list = [{"Area": "X", "Value": i} for i in range(100)]
+    with patch("faostat_mcp.server.faostat_get", return_value=big_list):
+        result = json.loads(await faostat_get_data(domain_code="QCL"))
+    assert result["_truncated"] is True
+    assert result["_returned_rows"] == 50
+
+
+async def test_faostat_get_data_show_codes_default_false():
+    """show_codes defaults to False — verify param passed to API."""
+    with patch("faostat_mcp.server.faostat_get", return_value=[]) as mock_get:
+        await faostat_get_data(domain_code="QCL")
+    call_params = mock_get.call_args[1]["params"]
+    assert call_params["show_codes"] is False
+    assert call_params["show_flags"] is False
+
+
+async def test_faostat_get_data_compact_format():
+    """response_format='compact' returns columnar structure."""
+    rows = [{"Area": "India", "Value": "100"}]
+    with patch("faostat_mcp.server.faostat_get", return_value=rows):
+        result = json.loads(await faostat_get_data(
+            domain_code="QCL", response_format="compact"
+        ))
+    assert "columns" in result
+    assert "rows" in result
+    assert result["columns"] == ["Area", "Value"]
+
+
+async def test_faostat_get_data_csv_format():
+    """response_format='csv' returns plain CSV text."""
+    rows = [{"Area": "India", "Value": "100"}]
+    with patch("faostat_mcp.server.faostat_get", return_value=rows):
+        result = await faostat_get_data(domain_code="QCL", response_format="csv")
+    lines = result.strip().split("\n")
+    assert lines[0] == "Area,Value"
+    assert lines[1] == "India,100"
+
+
+async def test_faostat_get_data_csv_truncated():
+    """Truncated CSV includes metadata comment line."""
+    big_list = [{"Area": "X", "Value": str(i)} for i in range(100)]
+    with patch("faostat_mcp.server.faostat_get", return_value=big_list):
+        result = await faostat_get_data(
+            domain_code="QCL", response_format="csv", limit=10
+        )
+    assert result.startswith("# truncated:")
+    lines = result.strip().split("\n")
+    # Comment + header + 10 data rows
+    assert len(lines) == 12
+
+
+async def test_faostat_get_data_field_selection():
+    """fields parameter filters columns in the response."""
+    rows = [{"Area": "India", "Item": "Wheat", "Value": "100"}]
+    with patch("faostat_mcp.server.faostat_get", return_value=rows):
+        result = json.loads(await faostat_get_data(
+            domain_code="QCL", fields="Area,Value"
+        ))
+    assert list(result[0].keys()) == ["Area", "Value"]
+
+
+async def test_faostat_get_data_invalid_format_returns_error():
+    """Invalid response_format returns an error dict."""
+    result = json.loads(await faostat_get_data(
+        domain_code="QCL", response_format="xml"
+    ))
+    assert result["error"] == "ValueError"
+
+
+# ---------------------------------------------------------------------------
+# faostat_get_codes — limit parameter
+# ---------------------------------------------------------------------------
+
+async def test_faostat_get_codes_truncates_when_limit_set():
+    """faostat_get_codes truncates large code lists when limit > 0."""
+    codes = [{"code": str(i), "description": f"Item {i}"} for i in range(300)]
+    with patch("faostat_mcp.server.faostat_get", return_value=codes):
+        result = json.loads(await faostat_get_codes(
+            dimension_id="item", domain_code="QCL", limit=50
+        ))
+    assert result["_truncated"] is True
+    assert result["_total_codes"] == 300
+    assert len(result["data"]) == 50
+
+
+async def test_faostat_get_codes_no_limit_returns_all():
+    """faostat_get_codes with default limit=0 returns all codes."""
+    codes = [{"code": str(i)} for i in range(300)]
+    with patch("faostat_mcp.server.faostat_get", return_value=codes):
+        result = json.loads(await faostat_get_codes(
+            dimension_id="item", domain_code="QCL"
+        ))
+    assert len(result) == 300
+
+
+# ---------------------------------------------------------------------------
+# faostat_get_rankings — response_format parameter
+# ---------------------------------------------------------------------------
+
+async def test_faostat_get_rankings_compact_format():
+    """faostat_get_rankings supports compact format."""
+    rankings = [{"Area": "China", "Value": "136M", "Rank": 1}]
+    with patch("faostat_mcp.server.faostat_post", return_value=rankings):
+        result = json.loads(await faostat_get_rankings(
+            domain_code="QCL", element_code="5510",
+            item_code="15", year="2022", response_format="compact"
+        ))
+    assert "columns" in result
+    assert "rows" in result

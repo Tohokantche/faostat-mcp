@@ -11,6 +11,8 @@ Run as a module (for Claude Desktop config):
   python -m faostat_mcp.server
 """
 
+import csv
+import io
 import json
 import os
 from typing import Any
@@ -29,6 +31,56 @@ from .client import (
 )
 
 load_dotenv()
+
+
+# ---------------------------------------------------------------------------
+# Response formatting helpers
+# ---------------------------------------------------------------------------
+
+def _format_rows(
+    rows: list[dict[str, Any]],
+    response_format: str = "objects",
+    fields: list[str] | None = None,
+) -> str:
+    """Convert a list of row-dicts to the requested output format.
+
+    Args:
+        rows: List of dicts (each dict is one data row).
+        response_format: "objects" | "compact" | "csv"
+        fields: If provided, only include these column names.
+
+    Returns:
+        A string: JSON for objects/compact, plain CSV text for csv.
+    """
+    if not rows:
+        return json.dumps([])
+
+    # Field filtering
+    if fields:
+        valid = [f for f in fields if f in rows[0]]
+        if valid:
+            rows = [{k: row.get(k) for k in valid} for row in rows]
+
+    if response_format == "objects":
+        return json.dumps(rows)
+
+    # Derive column names from the first row
+    columns = list(rows[0].keys())
+
+    if response_format == "csv":
+        buf = io.StringIO(newline="")
+        writer = csv.writer(buf, lineterminator="\n")
+        writer.writerow(columns)
+        for row in rows:
+            writer.writerow([row.get(c, "") for c in columns])
+        return buf.getvalue()
+
+    # "compact" — columnar format
+    return json.dumps({
+        "columns": columns,
+        "rows": [[row.get(c) for c in columns] for row in rows],
+    })
+
 
 # Initialise the FastMCP server
 mcp = FastMCP(
@@ -163,6 +215,7 @@ async def faostat_get_codes(
     dimension_id: str,
     domain_code: str,
     lang: str = DEFAULT_LANG,
+    limit: int = 0,
 ) -> str:
     """
     Get the list of available FILTER codes for a specific dimension in a domain.
@@ -177,6 +230,8 @@ async def faostat_get_codes(
         dimension_id: Dimension identifier (e.g. 'area', 'item', 'element', 'year')
         domain_code: Domain code (e.g. 'QCL', 'TM', 'FS')
         lang: Language code (default: 'en')
+        limit: Maximum number of codes to return (default: 0 = no limit).
+               Useful for large dimensions like 'item' which can have 1000+ entries.
 
     Examples:
         faostat_get_codes(dimension_id='element', domain_code='QCL')
@@ -187,6 +242,13 @@ async def faostat_get_codes(
     """
     try:
         result = await faostat_get(f"/{lang}/codes/{dimension_id}/{domain_code}")
+        if limit > 0 and isinstance(result, list) and len(result) > limit:
+            return json.dumps({
+                "data": result[:limit],
+                "_truncated": True,
+                "_total_codes": len(result),
+                "_returned_codes": limit,
+            })
         return json.dumps(result)
     except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
@@ -208,11 +270,13 @@ async def faostat_get_data(
     element_cs: str | None = None,
     item_cs: str | None = None,
     year_cs: str | None = None,
-    show_codes: bool = True,
+    show_codes: bool = False,
     show_unit: bool = True,
-    show_flags: bool = True,
+    show_flags: bool = False,
     null_values: bool = False,
-    limit: int = 500,
+    limit: int = 50,
+    response_format: str = "objects",
+    fields: str | None = None,
 ) -> str:
     """
     Fetch statistical data from a FAOSTAT domain.
@@ -241,12 +305,20 @@ async def faostat_get_data(
         element_cs: Element code set name
         item_cs: Item code set name
         year_cs: Year code set name (e.g. 'FAO_YEAR_RECENT' for recent years)
-        show_codes: Include code columns in response (default: True)
+        show_codes: Include code columns in response (default: False — names are
+                    more useful for interpretation; codes are for filtering)
         show_unit: Include unit column in response (default: True)
-        show_flags: Include data quality flags (default: True)
+        show_flags: Include data quality flags (default: False — rarely needed)
         null_values: Include rows with null values (default: False)
-        limit: Maximum number of rows to return (default: 500). Set to 0 for no limit.
+        limit: Maximum number of rows to return (default: 50). Set to 0 for no limit.
                Use faostat_get_datasize first if you expect a large result set.
+        response_format: Output format (default: 'objects').
+            - 'objects': Array of self-describing JSON objects (best LLM comprehension)
+            - 'compact': Columnar {"columns": [...], "rows": [[...]]} (~3x smaller)
+            - 'csv': Plain CSV text with header row (~4x smaller)
+            Use 'compact' or 'csv' when retrieving larger datasets to reduce token usage.
+        fields: Comma-separated column names to include (e.g. 'Area,Year,Value').
+                Omit to include all columns. Use to reduce response size further.
 
     Examples:
         # Apple production in Afghanistan 2024 (element 2510 = Production filter code)
@@ -254,8 +326,19 @@ async def faostat_get_data(
 
         # Food security indicators for all African countries
         faostat_get_data('FS', area_cs='AFRICA')
+
+        # Minimal response — only area, year and value in CSV format
+        faostat_get_data('QCL', area='231', item='15', element='2510', year='2024',
+                         response_format='csv', fields='Area,Year,Value')
     """
     try:
+        # Validate response_format
+        if response_format not in ("objects", "compact", "csv"):
+            return json.dumps({
+                "error": "ValueError",
+                "message": f"Invalid response_format '{response_format}'. Use 'objects', 'compact', or 'csv'.",
+            })
+
         params: dict[str, Any] = {
             "show_codes": show_codes,
             "show_unit": show_unit,
@@ -273,32 +356,51 @@ async def faostat_get_data(
 
         result = await faostat_get(f"/{lang}/data/{domain_code}/", params=params)
 
+        # Extract data rows and optional envelope
+        truncated_meta: dict[str, Any] | None = None
+
+        if isinstance(result, list):
+            data_rows = result
+        elif isinstance(result, dict) and isinstance(result.get("data"), list):
+            data_rows = result["data"]
+        else:
+            # Not tabular data — return as-is
+            return json.dumps(result)
+
         # Apply row limit to prevent context window overflow
         if limit > 0:
-            if isinstance(result, list):
-                total = len(result)
-                if total > limit:
-                    return json.dumps({
-                        "data": result[:limit],
-                        "_truncated": True,
-                        "_total_rows": total,
-                        "_returned_rows": limit,
-                        "_hint": f"Results truncated. Use faostat_get_datasize to check size, then filter further or increase limit.",
-                    })
-            elif isinstance(result, dict) and isinstance(result.get("data"), list):
-                data = result["data"]
-                total = len(data)
-                if total > limit:
-                    result = {
-                        **result,
-                        "data": data[:limit],
-                        "_truncated": True,
-                        "_total_rows": total,
-                        "_returned_rows": limit,
-                        "_hint": f"Results truncated. Use faostat_get_datasize to check size, then filter further or increase limit.",
-                    }
+            total = len(data_rows)
+            if total > limit:
+                data_rows = data_rows[:limit]
+                truncated_meta = {
+                    "_truncated": True,
+                    "_total_rows": total,
+                    "_returned_rows": limit,
+                    "_hint": "Results truncated. Use faostat_get_datasize to check size, then filter further or increase limit.",
+                }
 
-        return json.dumps(result)
+        # Parse fields parameter
+        parsed_fields = [f.strip() for f in fields.split(",")] if fields else None
+
+        # Format the data rows
+        formatted = _format_rows(data_rows, response_format=response_format, fields=parsed_fields)
+
+        # CSV returns plain text
+        if response_format == "csv":
+            if truncated_meta:
+                meta = f"# truncated: {truncated_meta['_total_rows']} total rows, {truncated_meta['_returned_rows']} returned\n"
+                return meta + formatted
+            return formatted
+
+        # For objects/compact, attach truncation metadata if needed
+        parsed = json.loads(formatted)
+        if truncated_meta:
+            if response_format == "compact":
+                return json.dumps({**parsed, **truncated_meta})
+            else:
+                return json.dumps({"data": parsed, **truncated_meta})
+
+        return formatted
     except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
@@ -486,6 +588,7 @@ async def faostat_get_rankings(
     year: str,
     lang: str = DEFAULT_LANG,
     limit: int = 10,
+    response_format: str = "objects",
 ) -> str:
     """
     Get rankings — e.g. top countries by production, yield, or trade value.
@@ -501,6 +604,7 @@ async def faostat_get_rankings(
         year: The year to rank for (e.g. '2022')
         lang: Language code (default: 'en')
         limit: Number of top results to return (default: 10)
+        response_format: Output format: 'objects' (default), 'compact', or 'csv'
 
     Example:
         faostat_get_rankings(domain_code='QCL', element_code='5510',
@@ -508,6 +612,12 @@ async def faostat_get_rankings(
         → Top 10 maize-producing countries in 2022
     """
     try:
+        if response_format not in ("objects", "compact", "csv"):
+            return json.dumps({
+                "error": "ValueError",
+                "message": f"Invalid response_format '{response_format}'. Use 'objects', 'compact', or 'csv'.",
+            })
+
         payload: dict[str, Any] = {
             "domain_code": domain_code,
             "element_code": element_code,
@@ -516,6 +626,10 @@ async def faostat_get_rankings(
             "limit": limit,
         }
         result = await faostat_post(f"/{lang}/rankings/", json=payload)
+
+        if isinstance(result, list) and result:
+            return _format_rows(result, response_format=response_format)
+
         return json.dumps(result)
     except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
