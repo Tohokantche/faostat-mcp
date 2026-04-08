@@ -2,7 +2,7 @@
 
 > Query UN food and agriculture statistics with AI — powered by the [Model Context Protocol](https://modelcontextprotocol.io)
 
-[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/berba-q/faostat-mcp/releases)
+[![Version](https://img.shields.io/badge/version-1.0.2-blue.svg)](https://github.com/berba-q/faostat-mcp/releases)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
