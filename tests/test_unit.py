@@ -11,18 +11,23 @@ Tests cover:
 import base64
 import json
 import time
-from unittest.mock import AsyncMock, patch
+import redis
+import unittest
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import httpx
 import pytest
 import respx
+import logging
 
 import faostat_mcp.client as client_module
 from faostat_mcp.client import (
+    HybridCaching,
     FAOSTATAuthError,
     FAOSTATRateLimitError,
     TokenManager,
     _is_token_expired,
+    _get_redis_connector,
     faostat_get,
 )
 from faostat_mcp.server import (
@@ -32,7 +37,10 @@ from faostat_mcp.server import (
     faostat_get_rankings,
     faostat_list_groups,
     faostat_ping,
+    caching_manager,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Helpers — crafted JWTs (signature is never verified by _is_token_expired)
@@ -334,7 +342,6 @@ async def test_faostat_get_auto_refreshes_via_auth_endpoint_on_401():
     assert result == {"status": "ok"}
 
 
-# ---------------------------------------------------------------------------
 # _format_rows helper — pure unit tests
 # ---------------------------------------------------------------------------
 
@@ -507,6 +514,29 @@ async def test_faostat_get_codes_no_limit_returns_all():
     assert len(result) == 300
 
 
+async def test_faostat_get_codes_caches_result():
+    """Reproduces bug: faostat_get_codes set_data call was missing arg_dict,
+    causing TypeError on every cache store attempt after a successful API call.
+    Fixed by passing arg_dict as the second argument to set_data."""
+    codes = [{"code": str(i)} for i in range(10)]
+    with patch("faostat_mcp.server.faostat_get", return_value=codes):
+        with patch.object(caching_manager, "get_data", return_value=None):
+            with patch.object(caching_manager, "set_data") as mock_set:
+                result = json.loads(await faostat_get_codes(
+                    dimension_id="item", domain_code="QCL"
+                ))
+    # Verify set_data was called with all 3 args: (tool_name, arg_dict, data)
+    assert mock_set.call_count == 1
+    call_args = mock_set.call_args[0]
+    assert len(call_args) == 3, (
+        f"set_data called with {len(call_args)} args instead of 3 — "
+        "missing arg_dict causes TypeError at runtime"
+    )
+    assert call_args[0] == "faostat_get_codes"
+    assert isinstance(call_args[1], dict)
+    assert len(result) == 10
+
+
 # ---------------------------------------------------------------------------
 # faostat_get_rankings — response_format parameter
 # ---------------------------------------------------------------------------
@@ -521,3 +551,239 @@ async def test_faostat_get_rankings_compact_format():
         ))
     assert "columns" in result
     assert "rows" in result
+
+
+# ---------------------------------------------------------------------------
+# HybridCaching class — Caching features logic and fallback
+# ---------------------------------------------------------------------------
+
+class TestHybridCaching(unittest.TestCase):
+
+    def setUp(self):
+        # Need to reset class-level variables
+        HybridCaching.user_caches = {}
+        HybridCaching.min_heap_ttl = []
+
+    def test_initialization(self):
+        """Verify HybridCaching initialization."""
+        mock_redis = MagicMock()
+        cache = HybridCaching(user_token="user1_token", redis_conn=mock_redis)
+        assert cache.user_token == "user1_token"
+        assert cache.redis_conn == mock_redis
+
+    @patch("faostat_mcp.client.time.time")
+    def test_mem_cache_logic(self, mock_time):
+        """Testing memory cache logic."""
+        mock_time.return_value = 1000.0
+        cache = HybridCaching(user_token="user1", mem_cache_ttl=60)
+        cache.set_mem_cache("tool", {"arg": 1}, "data")
+        assert "user1" in HybridCaching.user_caches
+        assert cache.get_mem_cache("tool", {"arg": 1}) == "data"
+
+    @patch("faostat_mcp.client.time.time")
+    def test_mem_cache_hit_refreshes_ttl(self, mock_time):
+        """Verify that a cache hit returns data and extends its life."""
+        mock_time.return_value = 1000.0
+        cache = HybridCaching(user_token="user1_token", mem_cache_ttl=100)
+
+        tool = "faostat_list_domains"
+        args = {"group_code": "Q"}
+        data = {"lang": "en"}
+        cache.set_mem_cache(tool, args, data)
+
+        user_cache = HybridCaching.user_caches["user1_token"]
+        initial_key = list(user_cache.keys())[0]
+        initial_expiry = user_cache[initial_key][0]
+        assert initial_expiry == 1100.0
+        mock_time.return_value = 1050.0
+        result = cache.get_mem_cache(tool, args)
+        assert result == data
+        new_expiry = user_cache[initial_key][0]
+        assert new_expiry == 1150.0
+        assert len(HybridCaching.min_heap_ttl) == 2
+
+    @patch("faostat_mcp.client.time.time")
+    def test_time_eviction(self, mock_time):
+        """Verifies that expired items are cleared during the next 'set' operation."""
+        mock_time.return_value = 1000.0
+        cache = HybridCaching(mem_cache_ttl=10)
+        cache.set_mem_cache("tool_1", {"arg": 1}, "data1")
+        mock_time.return_value = 1011.0
+        cache.set_mem_cache("tool_2", {"arg": 2}, "data2")
+        user_cache = HybridCaching.user_caches[cache.user_token]
+        assert len(user_cache) == 1
+        assert "tool_2" in list(user_cache.keys())[0]
+
+    @patch("faostat_mcp.client.time.time")
+    def test_size_limit_eviction(self, mock_time):
+        """Verifies that the oldest item is removed if MAX_CACHE_SIZE is exceeded."""
+        mock_time.return_value = 1000.0
+        cache = HybridCaching(max_mem_cache_size=1, user_token="user1")
+        cache.set_mem_cache("tool_1", {"arg": 1}, "data1")
+        mock_time.return_value = 1005.0
+        cache.set_mem_cache("tool_2", {"arg": 2}, "data2")
+
+        user_cache = HybridCaching.user_caches[cache.user_token]
+        assert len(user_cache) == 1
+        assert any("tool_2" in k for k in user_cache.keys())
+
+    def test_bulk_eviction(self):
+        """Add 220 items to a cache limited to 5 to see if it stabilizes."""
+        limit = 5
+        cache = HybridCaching(user_token="user1_token", max_mem_cache_size=limit)
+        for i in range(220):
+            cache.set_mem_cache(f"tool_{i}", {}, f"data_{i}")
+        user_cache = HybridCaching.user_caches["user1_token"]
+        assert len(user_cache) <= limit
+
+    def test_redis_cache_set(self):
+        """Directly verify interaction with the mock redis object."""
+        mock_redis = MagicMock()
+        cache = HybridCaching(user_token="user1", redis_conn=mock_redis)
+        with patch.object(cache, 'get_redis_cache', return_value=None):
+            cache.set_redis_cache("faostat_list_groups", {"lang": "en"}, {"result": "data"})
+            mock_redis.setex.assert_called_once()
+            call_args = mock_redis.setex.call_args[0]
+            assert "mcp:cache:user1:faostat_list_groups" in call_args[0]
+
+    def test_get_redis_cache_hit(self):
+        """Verify redis retrieves data, refreshes TTL, and decodes JSON."""
+        mock_redis = MagicMock()
+        mock_pipe = MagicMock()
+        mock_redis.pipeline.return_value = mock_pipe
+        mock_data = {"row1": "data1", "row2": "data2"}
+        mock_pipe.execute.return_value = [json.dumps(mock_data)]
+        cache = HybridCaching(user_token="user1_token", redis_conn=mock_redis, redis_cache_ttl=500)
+        result = cache.get_redis_cache("faostat_list_groups", {"lang": "en"})
+        mock_pipe.get.assert_called_once()
+        mock_pipe.expire.assert_called_with(unittest.mock.ANY, 500)
+        assert result == mock_data
+
+    def test_get_redis_cache_miss(self):
+        """Verify behavior when Redis returns nothing."""
+        mock_redis = MagicMock()
+        mock_pipe = MagicMock()
+        mock_redis.pipeline.return_value = mock_pipe
+        mock_pipe.execute.return_value = [None]
+        cache = HybridCaching(user_token="user1_token", redis_conn=mock_redis)
+        result = cache.get_redis_cache("tool_1", {"item": "unknown"})
+        assert result is None
+
+    @patch("faostat_mcp.client.logger")
+    def test_get_redis_cache_error(self, mock_logger):
+        """Verify that Redis errors during a GET are caught and logged."""
+        mock_redis = MagicMock()
+        mock_redis.pipeline.side_effect = redis.RedisError("Redis Down")
+        cache = HybridCaching(user_token="user1", redis_conn=mock_redis)
+        result = cache.get_redis_cache("tool", {})
+        assert result is None
+        mock_logger.error.assert_called()
+
+    @patch("faostat_mcp.client.logger")
+    def test_get_redis_cache_corrupted_json(self, mock_logger):
+        """Verify that invalid JSON in Redis does not crash the application."""
+        mock_redis = MagicMock()
+        mock_pipe = MagicMock()
+        mock_redis.pipeline.return_value = mock_pipe
+        corrupted_data = '{"row1": "data1", "row2": "data2"'
+        mock_pipe.execute.return_value = [corrupted_data]
+        cache = HybridCaching(user_token="user1", redis_conn=mock_redis)
+        try:
+            result = cache.get_redis_cache("tool", {})
+            assert result is None
+        except json.JSONDecodeError:
+            self.fail("get_redis_cache raised JSONDecodeError instead of returning None")
+
+    def test_user_isolation(self):
+        """Verify that different user tokens have isolated caches."""
+        cache_a = HybridCaching(user_token="user1_token")
+        cache_b = HybridCaching(user_token="User2_token")
+        shared_args = {"arg": 100}
+        cache_a.set_mem_cache("get_data", shared_args, "User1's Private Data")
+        assert cache_b.get_mem_cache("get_data", shared_args) is None
+
+    def test_cache_key_order_independence(self):
+        """Ensure that the same dict content produces the same hash regardless of order."""
+        args_v1 = {"param_a": 1, "param_b": 2, "param_c": 3}
+        args_v2 = {"param_c": 3, "param_a": 1, "param_b": 2}
+        key1 = HybridCaching._HybridCaching__create_cache_key(args_v1)
+        key2 = HybridCaching._HybridCaching__create_cache_key(args_v2)
+        assert key1 == key2
+
+    def test_cache_key_is_different_for_different_data(self):
+        """Ensure that different data produces different hashes."""
+        args_a = {"param": 1}
+        args_b = {"param": 2}
+        key_a = HybridCaching._HybridCaching__create_cache_key(args_a)
+        key_b = HybridCaching._HybridCaching__create_cache_key(args_b)
+        assert key_a != key_b
+
+
+class TestFallback(unittest.IsolatedAsyncioTestCase):
+    async def test_graceful_fallback_to_memory(self):
+        """Test that memory cache is automatically used when Redis is unavailable."""
+        with patch.object(caching_manager, 'redis_conn', None):
+            with patch.object(caching_manager, 'get_mem_cache', return_value=None) as mock_get_mem, \
+                 patch.object(caching_manager, 'set_mem_cache') as mock_set_mem, \
+                 patch('faostat_mcp.server.faostat_get', new_callable=AsyncMock) as mock_api:
+                mock_api_data = {"data": "from_api"}
+                mock_api.return_value = mock_api_data
+                await faostat_list_groups()
+                mock_get_mem.assert_called_once()
+                mock_set_mem.assert_called_once()
+                with self.assertRaises(AttributeError):
+                    caching_manager.get_redis_cache.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _get_redis_connector method — Redis connection logic
+# ---------------------------------------------------------------------------
+
+class TestRedisConnector(unittest.TestCase):
+    @patch("faostat_mcp.client.redis.from_url")
+    @patch("faostat_mcp.client.os.getenv")
+    def test_connector_success(self, mock_getenv, mock_redis_from_url):
+        """Test successful Redis connection and ping."""
+        mock_getenv.side_effect = lambda k, d=None: "127.0.0.1" if k == "REDIS_HOST_IP_ADDRESS" else d
+        mock_conn = MagicMock()
+        mock_conn.ping.return_value = True
+        mock_redis_from_url.return_value = mock_conn
+        result = _get_redis_connector()
+        assert result == mock_conn
+        mock_redis_from_url.assert_called_once()
+        mock_conn.ping.assert_called_once()
+
+    @patch("faostat_mcp.client.redis.from_url")
+    def test_connector_ping_failure(self, mock_redis_from_url):
+        """Test when connection is made but ping() returns False."""
+        mock_conn = MagicMock()
+        mock_conn.ping.return_value = False
+        mock_redis_from_url.return_value = mock_conn
+        result = _get_redis_connector()
+        assert result is None
+
+    @patch("faostat_mcp.client.redis.from_url")
+    def test_connector_connection_error(self, mock_redis_from_url):
+        """Test when redis.from_url raises a ConnectionError."""
+        mock_redis_from_url.side_effect = redis.ConnectionError("Network down")
+        result = _get_redis_connector()
+        assert result is None
+
+    @patch("faostat_mcp.client.redis.from_url")
+    def test_connector_generic_exception(self, mock_redis_from_url):
+        """Test when an unexpected Exception occurs."""
+        mock_redis_from_url.side_effect = Exception("Unexpected crash")
+        result = _get_redis_connector()
+        assert result is None
+
+    @patch("faostat_mcp.client.redis.from_url")
+    @patch("faostat_mcp.client.os.getenv")
+    def test_connector_authentication_failure(self, mock_getenv, mock_redis_from_url):
+        """Test behavior when credentials (password/username) are wrong."""
+        mock_getenv.side_effect = lambda k, d=None: "wrong_pass" if k == "REDIS_PASSWORD" else d
+        mock_conn = MagicMock()
+        mock_conn.ping.side_effect = redis.AuthenticationError("Invalid password")
+        mock_redis_from_url.return_value = mock_conn
+        result = _get_redis_connector()
+        assert result is None
+        mock_conn.ping.assert_called_once()
