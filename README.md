@@ -73,11 +73,11 @@ cd faostat-mcp
 pip install -e .
 ```
 
-#### 2. Install docker desktop on your machine
+#### 2. **Optional** - install docker desktop on your machine (for an easy set-up of the Redis caching server)
 
 - On Windows use [this link](https://docs.docker.com/desktop/setup/install/windows-install/)
 - On Mac use [this link](https://docs.docker.com/desktop/setup/install/mac-install/)
-- On Windows use [this link](https://docs.docker.com/desktop/setup/install/linux/)
+- On Linux use [this link](https://docs.docker.com/desktop/setup/install/linux/)
 
 
 #### 3. Configure
@@ -89,14 +89,14 @@ cp .env.example .env
 # FAOSTAT_USERNAME=your_username
 # FAOSTAT_PASSWORD=your_password
 
-# Edit .env and add/use the default REDIS CACHE server config :
+# Optional - edit .env and add/use the default REDIS CACHE server config :
 # REDIS_HOST_IP_ADDRESS=your_redis_server_ip
 # REDIS_HOST_PORT_NUMBER=your_redis_server_port
 # REDIS_DATABASE=your_redis_server_database
 # REDIS_USERNAME=your_redis_server_username
 # REDIS_PASSWORD=your_redis_server_password
 ```
-#### 4. Use docker to lunch a <a href="https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/docker/"> Redis </a> server with the default configuration
+#### 4. **Optional** - use docker to launch a <a href="https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/docker/"> Redis </a> caching server with the default configuration
 
 ```bash
 docker run -p 6379:6379 -it redis/redis-stack:latest
