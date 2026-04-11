@@ -51,7 +51,36 @@ class FAOSTATServerError(Exception):
 # Hybrid caching management
 # ---------------------------------------------------------------------------
 
+def _get_redis_connector() -> redis.Redis | None:
+    """Redis connection management."""
+    try:
+        ip_address = os.getenv("REDIS_HOST_IP_ADDRESS", "localhost")
+        port = os.getenv("REDIS_HOST_PORT_NUMBER", "6379")
+        data_base = os.getenv("REDIS_DATABASE", "0")
+        username = os.getenv("REDIS_USERNAME", None)
+        password = os.getenv("REDIS_PASSWORD", None)
+        redis_conn = redis.from_url(
+            f"redis://{ip_address}:{port}/{data_base}",
+            username=username,
+            password=password, 
+            decode_responses=True
+            )
+        if not redis_conn.ping():
+            raise Exception("The Redis server instance seems to be down!")
+        logger.info("Successfully initialize the redis caching!")
+        return redis_conn
+    except (redis.ConnectionError ,redis.AuthenticationError) as error_msg:
+        logger.warning(
+            f"Unable to initialize the redis caching due to {type(error_msg).__name__} : {str(error_msg)}!")
+        return None
+    except Exception as error_msg:
+        logger.warning(
+            f"An unpexctedt error occurs. {type(error_msg).__name__} : {str(error_msg)}!")
+        return None
+    
+
 class HybridCaching:
+    """In-Memory and Redis caching combined in a unified caching strategy"""
 
     # Initialise in-memory cache using a hash map to handle lightweight data
     user_caches: Dict[str, Dict[str, Any]] = {}
@@ -62,6 +91,8 @@ class HybridCaching:
                   mem_cache_ttl : int = 1200, 
                   redis_cache_ttl : int = 1800,
                   max_mem_cache_size: int = 128,
+                  user_token: str = None,
+                  redis_conn: redis.Redis = None,
                   ):
         
         # Initialise in-memory cache duration
@@ -71,11 +102,26 @@ class HybridCaching:
         # Maximum cache size
         self.MAX_CACHE_SIZE = max_mem_cache_size
         # Get FAOSTAT token from the env
-        self.user_token = os.getenv("FAOSTAT_API_TOKEN", "")
+        self.user_token = user_token
         # Initialise redis connection to handle large scale distributed caching
-        self.redis_conn = HybridCaching.__get_redis_connector()
+        self.redis_conn = redis_conn
 
-    
+
+    def get_data(self, tool_name: str, args: dict) -> Any:
+        """Smart retrieval: Checks Redis if available, else Memory."""
+        if self.redis_conn:
+            cached_val = self.get_redis_cache(tool_name, args)
+            if cached_val: 
+                return cached_val
+        return self.get_mem_cache(tool_name, args)
+
+    def set_data(self, tool_name: str, args: dict, data: Any):
+        """Smart storage: Saves to Redis if available, else Memory."""
+        if self.redis_conn:
+            self.set_redis_cache(tool_name, args, data)
+        else:
+            self.set_mem_cache(tool_name, args, data)
+
     def set_mem_cache(self, tool_name: str, args: dict, data: Any) -> bool:
         """Store data in memory-based cache."""
         # Cache data if it is not already cache
@@ -83,18 +129,16 @@ class HybridCaching:
             args_hash = HybridCaching.__create_cache_key(args)
             if self.user_token not in HybridCaching.user_caches:
                 HybridCaching.user_caches[self.user_token] = {}
-
-            # Make sure that there are no expired elements in cache 
-            self.__remove_expired_mem_cache()
             cache_key = f"{tool_name}:{args_hash}"
             curr_time = time.time()
             HybridCaching.user_caches[self.user_token][cache_key] = [curr_time + self.MEM_CACHE_TTL, data]
             # Use min-heap to keep tracking of expired elements in the cache
             heapq.heappush(HybridCaching.min_heap_ttl, (curr_time + self.MEM_CACHE_TTL, self.user_token, cache_key))
+            # Make sure that there are no expired elements in cache
+            self.__remove_expired_mem_cache()
             return False
         return True
    
-
     def get_mem_cache(self, tool_name: str, args: dict) -> Any:
         """Retrieve in-memmory-based cache if it exists and hasn't expired."""
         args_hash = HybridCaching.__create_cache_key(args)
@@ -103,57 +147,76 @@ class HybridCaching:
         if cache_key in user_cache:
             expiry, data = user_cache[cache_key]
             if time.time() < expiry:
-                
                 # Re-initialize the TTL of the data after a cache hit
-                HybridCaching.user_caches[self.user_token][cache_key][0] = time.time() + self.MEM_CACHE_TTL
+                curr_time = time.time() 
+                HybridCaching.user_caches[self.user_token][cache_key][0] = curr_time + self.MEM_CACHE_TTL
+                # Add the cached data new ttl to the heap
+                heapq.heappush(HybridCaching.min_heap_ttl, (curr_time + self.MEM_CACHE_TTL, self.user_token, cache_key))
                 logger.info(f" {tool_name} : cache hit!")
                 return data
         return None
     
-
     def set_redis_cache(self, tool_name: str, args: dict, data: Any) -> bool:
         """Store data in redis-based cache."""
         args_hash = HybridCaching.__create_cache_key(args)
-        # Cache data if it is not already cache
+        # Cache the data if it is not already cache
         if self.redis_conn and not self.get_redis_cache(tool_name, args):
-            self.redis_conn.setex(
-                f"mcp:cache:{self.user_token}:{tool_name}:{args_hash}", 
-                self.REDIS_CACHE_TTL, 
-                json.dumps(data)
-                )
-            return False
+            try:
+                self.redis_conn.setex(
+                    f"mcp:cache:{self.user_token}:{tool_name}:{args_hash}", 
+                    self.REDIS_CACHE_TTL, 
+                    json.dumps(data)
+                    )
+                return False
+            except (redis.RedisError, json.JSONDecodeError) as error_msg:
+                logger.error(f"Unable to set redis cache due to {type(error_msg).__name__} : {str(error_msg)}!")
+                return True
         return True
-
 
     def get_redis_cache(self, tool_name: str, args: dict) -> str | None:
         """Retrieve redis cache if it exists and hasn't expired."""
         args_hash = HybridCaching.__create_cache_key(args)
         if self.redis_conn:
             cache_key = f"mcp:cache:{self.user_token}:{tool_name}:{args_hash}"
-            pipe = self.redis_conn.pipeline()
-            pipe.get(cache_key)
-            pipe.expire(cache_key, self.REDIS_CACHE_TTL)
-            cached_data = pipe.execute()[0]
-            return json.loads(cached_data) if cached_data else None
+            try:
+                pipe = self.redis_conn.pipeline()
+                pipe.get(cache_key)
+                pipe.expire(cache_key, self.REDIS_CACHE_TTL)
+                cached_data = pipe.execute()[0]
+                return json.loads(cached_data) if cached_data else None
+            except (redis.RedisError, json.JSONDecodeError) as error_msg:
+                logger.error(f"Unable to get redis cache value due to {type(error_msg).__name__} : {str(error_msg)}!")
+                return None
         return None
-    
 
     def __remove_expired_mem_cache(self):
-        """Search and remove expired cache elements to free up memory."""
+        """Search and remove expired cache to free up memory."""
         oldest_expiry = HybridCaching.min_heap_ttl[0][0] if HybridCaching.min_heap_ttl else None
         while oldest_expiry:
             if not (time.time() > oldest_expiry):
-                return
+                break
+            # Remove expired cache ttl from the heap
             oldest_expiry, oldest_user_token, oldest_cache_key = heapq.heappop(HybridCaching.min_heap_ttl)
-            # Remove expired element from the cache
-            del HybridCaching.user_caches[oldest_user_token][oldest_cache_key]
+            if HybridCaching.user_caches[oldest_user_token][oldest_cache_key]:
+                # Verify if the cache ttl has not been changed by a previous cache hit
+                if HybridCaching.user_caches[oldest_user_token][oldest_cache_key][0] == oldest_expiry:
+                    # Remove expired element from the memory cache
+                    del HybridCaching.user_caches[oldest_user_token][oldest_cache_key]
+                    if not len(HybridCaching.user_caches[oldest_user_token]):
+                        del HybridCaching.user_caches[oldest_user_token]
             oldest_expiry = HybridCaching.min_heap_ttl[0][0] if HybridCaching.min_heap_ttl else None
         
         # Prevent cache to grow indefinitely by constraining its size
-        while len(HybridCaching.user_caches) > self.MAX_CACHE_SIZE:
+        oldest_user_token = HybridCaching.min_heap_ttl[0][1] if HybridCaching.min_heap_ttl else None
+        while oldest_user_token:
+            if len(HybridCaching.user_caches[oldest_user_token]) <= self.MAX_CACHE_SIZE:
+                break
             oldest_expiry, oldest_user_token, oldest_cache_key = heapq.heappop(HybridCaching.min_heap_ttl)
-            del HybridCaching.user_caches[oldest_user_token][oldest_cache_key]
-
+            if HybridCaching.user_caches[oldest_user_token][oldest_cache_key]:
+                del HybridCaching.user_caches[oldest_user_token][oldest_cache_key]
+                if not len(HybridCaching.user_caches[oldest_user_token]):
+                        del HybridCaching.user_caches[oldest_user_token]
+            oldest_user_token = HybridCaching.min_heap_ttl[0][1] if HybridCaching.min_heap_ttl else None
 
     @staticmethod
     def __create_cache_key(args: dict) -> str:
@@ -161,38 +224,8 @@ class HybridCaching:
         args_json = json.dumps(args, sort_keys=True)
         args_hash = hashlib.md5(args_json.encode()).hexdigest()
         return args_hash
-    
+         
 
-    @staticmethod
-    def __get_redis_connector() -> redis.Redis | None:
-        """Redis connection management."""
-        try:
-            ip_address = os.getenv("REDIS_HOST_IP_ADDRESS", "localhost")
-            port = os.getenv("REDIS_HOST_PORT_NUMBER", "6379")
-            data_base = os.getenv("REDIS_DATABASE", "0")
-            username = os.getenv("REDIS_USERNAME", None)
-            password = os.getenv("REDIS_PASSWORD", None)
-            redis_conn = redis.from_url(
-                f"redis://{ip_address}:{port}/{data_base}",
-                username=username,
-                password=password, 
-                decode_responses=True
-                )
-            # Test the redis connection by inserting and retrieving a dummy data
-            redis_conn.set("test_key", "test_value")
-            if not (redis_conn.get("test_key") == "test_value"):
-                raise Exception("The Redis server instance seems corrupted, please reinstall it!")
-            logger.info("Successfully initialize the redis caching!")
-            return redis_conn
-        except redis.exceptions.ConnectionError as error_msg:
-            logger.warning(
-                f"Unable to initialize the redis caching due to {type(error_msg).__name__} : {str(error_msg)}!")
-            return None
-        except Exception as error_msg:
-            logger.warning(
-                f"Unable to initialize the redis caching due to {type(error_msg).__name__} : {str(error_msg)}!")
-            return None
-        
 # ---------------------------------------------------------------------------
 # Token management with automatic refresh
 # ---------------------------------------------------------------------------
