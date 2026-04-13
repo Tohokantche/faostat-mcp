@@ -9,6 +9,8 @@ import base64
 import json as _json
 import logging
 import os
+import pathlib
+import sqlite3
 import time
 from typing import Any, Dict
 import redis
@@ -45,6 +47,89 @@ class FAOSTATRateLimitError(Exception):
 
 class FAOSTATServerError(Exception):
     """Raised when the API returns a 5xx server error."""
+
+
+# ---------------------------------------------------------------------------
+# SQLite disk cache (cross-session persistence, no external dependencies)
+# ---------------------------------------------------------------------------
+
+_DISK_CACHE_PATH = pathlib.Path.home() / ".cache" / "faostat-mcp" / "cache.db"
+_DEFAULT_DISK_CACHE_TTL = 86400  # 24 hours
+
+
+class DiskCache:
+    """SQLite-backed persistent cache. Survives MCP server process restarts.
+
+    Cache location: ~/.cache/faostat-mcp/cache.db
+    Default TTL: 24 hours (appropriate since FAOSTAT data updates at most daily).
+    Bloat prevention: LRU eviction when entry count exceeds DISK_CACHE_MAX_ENTRIES.
+    Disable entirely: set env var FAOSTAT_DISK_CACHE=false.
+    """
+
+    def __init__(
+        self,
+        db_path: pathlib.Path = _DISK_CACHE_PATH,
+        ttl: int = _DEFAULT_DISK_CACHE_TTL,
+    ):
+        self._ttl = ttl
+        self._enabled = os.getenv("FAOSTAT_DISK_CACHE", "true").lower() != "false"
+        if not self._enabled:
+            self._conn = None
+            return
+        self._max_entries = int(os.getenv("DISK_CACHE_MAX_ENTRIES", "1000"))
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        # check_same_thread=False: FastMCP async tools may run on different threads
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS cache "
+            "(key TEXT PRIMARY KEY, data TEXT, expires_at REAL)"
+        )
+        self._conn.commit()
+        # On startup: purge expired rows, then compact freed pages
+        self._conn.execute("DELETE FROM cache WHERE expires_at < ?", (time.time(),))
+        self._conn.commit()
+        # VACUUM must run outside a transaction (sets autocommit temporarily)
+        self._conn.isolation_level = None
+        try:
+            self._conn.execute("VACUUM")
+        finally:
+            self._conn.isolation_level = ""
+
+    def get(self, key: str) -> Any:
+        """Return cached value for key, or None if missing/expired."""
+        if not self._enabled or self._conn is None:
+            return None
+        row = self._conn.execute(
+            "SELECT data, expires_at FROM cache WHERE key = ?", (key,)
+        ).fetchone()
+        if row and row[1] > time.time():
+            try:
+                return _json.loads(row[0])
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    def set(self, key: str, data: Any) -> None:
+        """Store data under key with configured TTL. Evicts oldest entries if over limit."""
+        if not self._enabled or self._conn is None:
+            return
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO cache (key, data, expires_at) VALUES (?, ?, ?)",
+                (key, _json.dumps(data), time.time() + self._ttl),
+            )
+            # LRU eviction: delete oldest entries when over max_entries limit
+            count = self._conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
+            if count > self._max_entries:
+                overflow = count - self._max_entries
+                self._conn.execute(
+                    "DELETE FROM cache WHERE key IN "
+                    "(SELECT key FROM cache ORDER BY expires_at ASC LIMIT ?)",
+                    (overflow,),
+                )
+            self._conn.commit()
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            logger.warning("DiskCache.set failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -96,27 +181,44 @@ class HybridCaching:
                   ):
         
         # Initialise in-memory cache duration
-        self.MEM_CACHE_TTL = mem_cache_ttl 
+        self.MEM_CACHE_TTL = mem_cache_ttl
         # Initialise redis cache duration
-        self.REDIS_CACHE_TTL = redis_cache_ttl 
+        self.REDIS_CACHE_TTL = redis_cache_ttl
         # Maximum cache size
         self.MAX_CACHE_SIZE = max_mem_cache_size
         # Get FAOSTAT token from the env
         self.user_token = user_token
         # Initialise redis connection to handle large scale distributed caching
         self.redis_conn = redis_conn
+        # Initialise SQLite disk cache for cross-session persistence
+        self.disk_cache = DiskCache(
+            ttl=int(os.getenv("DISK_CACHE_TTL", str(_DEFAULT_DISK_CACHE_TTL)))
+        )
 
 
     def get_data(self, tool_name: str, args: dict) -> Any:
-        """Smart retrieval: Checks Redis if available, else Memory."""
+        """Smart retrieval: Memory → Disk → Redis (promotes to memory on disk/Redis hit)."""
+        # 1. In-memory (fastest)
+        val = self.get_mem_cache(tool_name, args)
+        if val is not None:
+            return val
+        # 2. Disk (cross-session persistence, no external dependency)
+        disk_key = f"{tool_name}:{HybridCaching.__create_cache_key(args)}"
+        val = self.disk_cache.get(disk_key)
+        if val is not None:
+            self.set_mem_cache(tool_name, args, val)  # promote to memory
+            return val
+        # 3. Redis (distributed / high-volume deployments)
         if self.redis_conn:
-            cached_val = self.get_redis_cache(tool_name, args)
-            if cached_val: 
-                return cached_val
-        return self.get_mem_cache(tool_name, args)
+            val = self.get_redis_cache(tool_name, args)
+            if val is not None:
+                return val
+        return None
 
     def set_data(self, tool_name: str, args: dict, data: Any):
-        """Smart storage: Saves to Redis if available, else Memory."""
+        """Smart storage: always writes to disk; also writes to Redis or memory."""
+        disk_key = f"{tool_name}:{HybridCaching.__create_cache_key(args)}"
+        self.disk_cache.set(disk_key, data)
         if self.redis_conn:
             self.set_redis_cache(tool_name, args, data)
         else:
@@ -297,13 +399,15 @@ class TokenManager:
         if not self.has_credentials:
             if not self._token:
                 raise FAOSTATAuthError(
-                    "FAOSTAT_API_TOKEN is not set and no credentials configured for auto-login. "
-                    "Set FAOSTAT_USERNAME + FAOSTAT_PASSWORD in .env, or provide a token."
+                    "FAOSTAT is not authenticated. "
+                    "Call faostat_setup(username='...', password='...') to configure credentials, "
+                    "or set FAOSTAT_API_TOKEN (or FAOSTAT_USERNAME + FAOSTAT_PASSWORD) "
+                    "as environment variables."
                 )
             raise FAOSTATAuthError(
-                "Your FAOSTAT_API_TOKEN has expired. "
-                "Set FAOSTAT_USERNAME + FAOSTAT_PASSWORD in .env for automatic refresh, "
-                "or log in at the developer portal and update your token."
+                "Your FAOSTAT_API_TOKEN has expired and no credentials are configured for "
+                "automatic refresh. Call faostat_setup(username='...', password='...') to set up "
+                "persistent credentials, or update FAOSTAT_API_TOKEN in your environment."
             )
 
         # Acquire lock to avoid concurrent refresh attempts
@@ -319,26 +423,100 @@ class TokenManager:
         if not self.has_credentials:
             raise FAOSTATAuthError(
                 "Received 401 and no credentials configured for auto-refresh. "
-                "Set FAOSTAT_USERNAME + FAOSTAT_PASSWORD in .env."
+                "Call faostat_setup(username='...', password='...') to configure credentials, "
+                "or set FAOSTAT_USERNAME + FAOSTAT_PASSWORD environment variables."
             )
         async with self._lock:
             self._token = await self._login()
             return self._token
 
 
+# ---------------------------------------------------------------------------
+# Credential storage (keyring → config file fallback)
+# ---------------------------------------------------------------------------
+
+_CREDENTIALS_FILE = pathlib.Path.home() / ".config" / "faostat-mcp" / "credentials.json"
+
+
+def _load_credentials_from_storage() -> tuple[str, str]:
+    """Return (username, password) from keyring or config file, or ('', '')."""
+    # 1. Try system keychain (macOS Keychain, Windows Credential Manager)
+    try:
+        import keyring  # optional dependency: pip install faostat-mcp[keyring]
+        u = keyring.get_password("faostat-mcp", "username") or ""
+        p = keyring.get_password("faostat-mcp", "password") or ""
+        if u and p:
+            return u, p
+    except Exception:
+        pass
+    # 2. Fall back to config file (~/.config/faostat-mcp/credentials.json)
+    if _CREDENTIALS_FILE.exists():
+        try:
+            data = _json.loads(_CREDENTIALS_FILE.read_text())
+            return data.get("username", ""), data.get("password", "")
+        except Exception:
+            pass
+    return "", ""
+
+
+def _save_credentials_to_storage(username: str, password: str) -> str:
+    """Store credentials in keyring (if available) and config file (mode 600).
+
+    Returns a human-readable description of where the credentials were saved.
+    """
+    saved = []
+    try:
+        import keyring
+        keyring.set_password("faostat-mcp", "username", username)
+        keyring.set_password("faostat-mcp", "password", password)
+        saved.append("system keychain")
+    except Exception:
+        pass
+    # Always write config file as a reliable fallback
+    _CREDENTIALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CREDENTIALS_FILE.write_text(
+        _json.dumps({"username": username, "password": password})
+    )
+    _CREDENTIALS_FILE.chmod(0o600)  # owner read/write only
+    saved.append(str(_CREDENTIALS_FILE))
+    return " and ".join(saved)
+
+
+def _reset_token_manager() -> None:
+    """Reset the singleton so the next _get_token_manager() call re-reads credentials."""
+    global _token_manager
+    _token_manager = None
+
+
+# ---------------------------------------------------------------------------
 # Lazily-initialised singleton
+# ---------------------------------------------------------------------------
+
 _token_manager: TokenManager | None = None
 
 
 def _get_token_manager() -> TokenManager:
-    """Return the module-level TokenManager singleton."""
+    """Return the module-level TokenManager singleton.
+
+    Credential resolution order:
+    1. FAOSTAT_API_TOKEN env var
+    2. FAOSTAT_USERNAME + FAOSTAT_PASSWORD env vars
+    3. System keychain (set by faostat_setup tool)
+    4. ~/.config/faostat-mcp/credentials.json (set by faostat_setup tool)
+    """
     global _token_manager
     if _token_manager is None:
+        token    = os.getenv("FAOSTAT_API_TOKEN", "")
+        username = os.getenv("FAOSTAT_USERNAME", "")
+        password = os.getenv("FAOSTAT_PASSWORD", "")
+        # If env vars don't provide credentials, try persistent storage
+        if not (username and password):
+            username, password = _load_credentials_from_storage()
         _token_manager = TokenManager(
             base_url=BASE_URL,
-            token=os.getenv("FAOSTAT_API_TOKEN", ""),
-            username=os.getenv("FAOSTAT_USERNAME", ""),
-            password=os.getenv("FAOSTAT_PASSWORD", ""),
+            token=token,
+            username=username,
+            password=password,
         )
     return _token_manager
 

@@ -10,6 +10,8 @@ Tests cover:
 
 import base64
 import json
+import pathlib
+import tempfile
 import time
 import redis
 import unittest
@@ -37,7 +39,15 @@ from faostat_mcp.server import (
     faostat_get_rankings,
     faostat_list_groups,
     faostat_ping,
+    faostat_search_codes,
+    faostat_setup,
     caching_manager,
+)
+from faostat_mcp.client import (
+    DiskCache,
+    _save_credentials_to_storage,
+    _load_credentials_from_storage,
+    _reset_token_manager,
 )
 
 logger = logging.getLogger(__name__)
@@ -795,3 +805,245 @@ class TestRedisConnector(unittest.TestCase):
         result = _get_redis_connector()
         assert result is None
         mock_conn.ping.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# faostat_search_codes — disambiguation logic
+# ---------------------------------------------------------------------------
+
+# Realistic QCL element codes response (subset of real API structure)
+_QCL_ELEMENTS = {
+    "metadata": {},
+    "data": [
+        {"code": "2510", "Element": "Production"},
+        {"code": "2312", "Element": "Area harvested"},
+        {"code": "2413", "Element": "Yield"},
+        {"code": "2111", "Element": "Stocks"},
+        {"code": "2512", "Element": "Gross Production Index Number"},
+        {"code": "2611", "Element": "Export Quantity"},
+    ],
+}
+
+_QCL_ITEMS = {
+    "metadata": {},
+    "data": [
+        {"code": "15",  "Item": "Wheat"},
+        {"code": "44",  "Item": "Durum wheat"},
+        {"code": "56",  "Item": "Maize (corn)"},
+        {"code": "71",  "Item": "Rye"},
+        {"code": "515", "Item": "Apples"},
+    ],
+}
+
+_QCL_AREAS = {
+    "metadata": {},
+    "data": [
+        {"code": "231", "Area": "Nigeria"},
+        {"code": "232", "Area": "Niger"},
+        {"code": "2",   "Area": "Afghanistan"},
+    ],
+}
+
+
+@patch("faostat_mcp.server.caching_manager")
+async def test_search_codes_single_match_no_confirmation(mock_cache):
+    """A query matching exactly one code returns requires_confirmation=False."""
+    mock_cache.get_data.return_value = None
+    with patch("faostat_mcp.server.faostat_get", return_value=_QCL_ELEMENTS):
+        result = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="element", query="yield"
+        ))
+    assert result["requires_confirmation"] is False
+    assert "match" in result
+    assert result["match"]["code"] == "2413"
+    assert "Yield" in result["match"]["label"]
+    assert "2413" in result["message"]
+
+
+@patch("faostat_mcp.server.caching_manager")
+async def test_search_codes_multiple_matches_requires_confirmation(mock_cache):
+    """A query matching multiple codes returns requires_confirmation=True with MUST."""
+    mock_cache.get_data.return_value = None
+    with patch("faostat_mcp.server.faostat_get", return_value=_QCL_ELEMENTS):
+        result = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="element", query="production"
+        ))
+    assert result["requires_confirmation"] is True
+    assert "matches" in result
+    codes = [m["code"] for m in result["matches"]]
+    assert "2510" in codes  # Production
+    assert "2512" in codes  # Gross Production Index Number
+    assert len(result["matches"]) >= 2
+    assert "MUST" in result["message"]
+
+
+@patch("faostat_mcp.server.caching_manager")
+async def test_search_codes_no_matches(mock_cache):
+    """A query with no matches returns empty list, requires_confirmation=False."""
+    mock_cache.get_data.return_value = None
+    with patch("faostat_mcp.server.faostat_get", return_value=_QCL_ELEMENTS):
+        result = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="element", query="gross yield index"
+        ))
+    assert result["requires_confirmation"] is False
+    assert result["matches"] == []
+    assert "faostat_get_codes" in result["message"]
+
+
+@patch("faostat_mcp.server.caching_manager")
+async def test_search_codes_case_insensitive(mock_cache):
+    """Search is case-insensitive: 'nigeria' and 'NIGERIA' return the same code."""
+    mock_cache.get_data.return_value = None
+    with patch("faostat_mcp.server.faostat_get", return_value=_QCL_AREAS):
+        lower = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="area", query="nigeria"
+        ))
+        upper = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="area", query="NIGERIA"
+        ))
+    assert lower["requires_confirmation"] is False
+    assert upper["requires_confirmation"] is False
+    assert lower["match"]["code"] == upper["match"]["code"] == "231"
+
+
+@patch("faostat_mcp.server.caching_manager")
+async def test_search_codes_partial_match_ambiguous(mock_cache):
+    """Partial match 'niger' matches both Nigeria and Niger — requires confirmation."""
+    mock_cache.get_data.return_value = None
+    with patch("faostat_mcp.server.faostat_get", return_value=_QCL_AREAS):
+        result = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="area", query="niger"
+        ))
+    assert result["requires_confirmation"] is True
+    codes = [m["code"] for m in result["matches"]]
+    assert "231" in codes  # Nigeria
+    assert "232" in codes  # Niger
+
+
+@patch("faostat_mcp.server.caching_manager")
+async def test_search_codes_item_dimension(mock_cache):
+    """Item search: 'wheat' matches Wheat + Durum wheat → multiple matches."""
+    mock_cache.get_data.return_value = None
+    with patch("faostat_mcp.server.faostat_get", return_value=_QCL_ITEMS):
+        result = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="item", query="wheat"
+        ))
+    assert result["requires_confirmation"] is True
+    codes = [m["code"] for m in result["matches"]]
+    assert "15" in codes   # Wheat
+    assert "44" in codes   # Durum wheat
+
+
+@patch("faostat_mcp.server.caching_manager")
+async def test_search_codes_plain_list_response(mock_cache):
+    """Tool handles a plain-list API response (no 'data' wrapper)."""
+    mock_cache.get_data.return_value = None
+    plain_list = [
+        {"code": "15", "Item": "Wheat"},
+        {"code": "44", "Item": "Durum wheat"},
+    ]
+    with patch("faostat_mcp.server.faostat_get", return_value=plain_list):
+        result = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="item", query="durum"
+        ))
+    assert result["requires_confirmation"] is False
+    assert result["match"]["code"] == "44"
+
+
+@patch("faostat_mcp.server.caching_manager")
+async def test_search_codes_auth_error_returns_error_dict(mock_cache):
+    """FAOSTATAuthError is caught and returned as a structured error dict."""
+    mock_cache.get_data.return_value = None
+    with patch("faostat_mcp.server.faostat_get", side_effect=FAOSTATAuthError("expired")):
+        result = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="element", query="production"
+        ))
+    assert result["error"] == "FAOSTATAuthError"
+    assert "expired" in result["message"]
+
+
+@patch("faostat_mcp.server.caching_manager")
+async def test_search_codes_cache_hit_bypasses_api(mock_cache):
+    """A cached result is returned immediately without calling faostat_get."""
+    cached = {
+        "match": {"code": "2413", "label": "Yield"},
+        "requires_confirmation": False,
+        "message": "cached",
+    }
+    mock_cache.get_data.return_value = cached
+    with patch("faostat_mcp.server.faostat_get") as mock_get:
+        result = json.loads(await faostat_search_codes(
+            domain_code="QCL", dimension_id="element", query="yield"
+        ))
+    mock_get.assert_not_called()
+    assert result == cached
+
+
+# ---------------------------------------------------------------------------
+# DiskCache — cross-session persistence
+# ---------------------------------------------------------------------------
+
+
+def test_disk_cache_stores_and_retrieves():
+    """DiskCache stores a value and retrieves it before expiry."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = DiskCache(db_path=pathlib.Path(tmpdir) / "test.db", ttl=60)
+        cache.set("key1", {"answer": 42})
+        result = cache.get("key1")
+    assert result == {"answer": 42}
+
+
+def test_disk_cache_expires_entries():
+    """DiskCache returns None for entries past their TTL."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = DiskCache(db_path=pathlib.Path(tmpdir) / "test.db", ttl=-1)  # already expired
+        cache.set("key1", {"answer": 42})
+        result = cache.get("key1")
+    assert result is None
+
+
+@patch.dict("os.environ", {"FAOSTAT_DISK_CACHE": "false"})
+def test_disk_cache_disabled_when_env_false():
+    """FAOSTAT_DISK_CACHE=false means all reads return None and writes are no-ops."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = DiskCache(db_path=pathlib.Path(tmpdir) / "test.db", ttl=60)
+        cache.set("key1", {"answer": 42})
+        result = cache.get("key1")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# faostat_setup — one-time credential configuration
+# ---------------------------------------------------------------------------
+
+async def test_faostat_setup_stores_credentials_on_success():
+    """faostat_setup validates credentials, saves them, and resets the token manager."""
+    fresh_token = _make_jwt(int(time.time()) + 3600)
+    with patch("faostat_mcp.server.TokenManager") as MockTM, \
+         patch("faostat_mcp.server._save_credentials_to_storage", return_value="system keychain") as mock_save, \
+         patch("faostat_mcp.server._reset_token_manager") as mock_reset:
+        mock_instance = AsyncMock()
+        mock_instance.force_refresh = AsyncMock(return_value=fresh_token)
+        MockTM.return_value = mock_instance
+        result = json.loads(await faostat_setup(
+            username="user@example.com", password="secret123"
+        ))
+    assert result["status"] == "ok"
+    assert "system keychain" in result["message"]
+    mock_save.assert_called_once_with("user@example.com", "secret123")
+    mock_reset.assert_called_once()
+
+
+async def test_faostat_setup_returns_error_on_bad_creds():
+    """faostat_setup returns status=error when credentials are invalid."""
+    with patch("faostat_mcp.server.TokenManager") as MockTM:
+        mock_instance = AsyncMock()
+        mock_instance.force_refresh = AsyncMock(
+            side_effect=FAOSTATAuthError("Login failed — invalid username or password.")
+        )
+        MockTM.return_value = mock_instance
+        result = json.loads(await faostat_setup(
+            username="bad@example.com", password="wrong"
+        ))
+    assert result["status"] == "error"
+    assert "Authentication failed" in result["message"]
