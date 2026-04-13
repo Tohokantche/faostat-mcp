@@ -493,9 +493,12 @@ async def test_faostat_get_data_invalid_format_returns_error():
 # ---------------------------------------------------------------------------
 
 async def test_faostat_get_codes_truncates_when_limit_set():
-    """faostat_get_codes truncates large code lists when limit > 0."""
-    codes = [{"code": str(i), "description": f"Item {i}"} for i in range(300)]
-    with patch("faostat_mcp.server.faostat_get", return_value=codes):
+    """faostat_get_codes truncates large code lists when limit > 0.
+    Uses a dict response matching the real FAOSTAT API shape: {"metadata": ..., "data": [...]}.
+    """
+    codes_list = [{"code": str(i), "description": f"Item {i}"} for i in range(300)]
+    api_response = {"metadata": {}, "data": codes_list}
+    with patch("faostat_mcp.server.faostat_get", return_value=api_response):
         result = json.loads(await faostat_get_codes(
             dimension_id="item", domain_code="QCL", limit=50
         ))
@@ -505,14 +508,18 @@ async def test_faostat_get_codes_truncates_when_limit_set():
 
 
 async def test_faostat_get_codes_no_limit_returns_all():
-    """faostat_get_codes with default limit=0 returns all codes."""
-    codes = [{"code": str(i)} for i in range(300)]
-    with patch("faostat_mcp.server.faostat_get", return_value=codes):
+    """faostat_get_codes with default limit=0 returns all codes.
+    Uses a dict response matching the real FAOSTAT API shape: {"metadata": ..., "data": [...]}.
+    """
+    codes_list = [{"code": str(i)} for i in range(300)]
+    api_response = {"metadata": {}, "data": codes_list}
+    with patch("faostat_mcp.server.faostat_get", return_value=api_response):
         with patch.object(caching_manager, "get_data", return_value=None):
             result = json.loads(await faostat_get_codes(
                 dimension_id="item", domain_code="QCL"
             ))
-    assert len(result) == 300
+    assert result["metadata"] == {}
+    assert len(result["data"]) == 300
 
 
 async def test_faostat_get_codes_caches_result():

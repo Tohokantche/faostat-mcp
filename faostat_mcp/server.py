@@ -282,19 +282,21 @@ async def faostat_get_codes(
     """
     try:
         arg_dict = {
-            'dimension_id': dimension_id, 
-            'domain_code': domain_code, 
+            'dimension_id': dimension_id,
+            'domain_code': domain_code,
             'lang': lang,
+            'limit': limit,
             }
         cached_val = caching_manager.get_data("faostat_get_codes", arg_dict)
         if cached_val:
             return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/codes/{dimension_id}/{domain_code}")
-        if limit > 0 and isinstance(result, list) and len(result) > limit:
+        codes_list = result.get("data", result) if isinstance(result, dict) else result
+        if limit > 0 and isinstance(codes_list, list) and len(codes_list) > limit:
             truncated = {
-                "data": result[:limit],
+                "data": codes_list[:limit],
                 "_truncated": True,
-                "_total_codes": len(result),
+                "_total_codes": len(codes_list),
                 "_returned_codes": limit,
             }
             caching_manager.set_data("faostat_get_codes", arg_dict, truncated)
