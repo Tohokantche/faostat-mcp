@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.berba-q/faostat-mcp -->
 # FAOSTAT MCP Server
 
 > Query UN food and agriculture statistics with AI — powered by the [Model Context Protocol](https://modelcontextprotocol.io)

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.berba-q/faostat-mcp",
+  "title": "FAOSTAT MCP",
+  "description": "Query UN FAO food and agriculture statistics for 245 countries — crop production, trade, food security, emissions, and more. 21 tools covering every FAOSTAT endpoint with hybrid caching and built-in disambiguation.",
+  "repository": {
+    "url": "https://github.com/berba-q/faostat-mcp",
+    "source": "github"
+  },
+  "version": "1.2.2",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "faostat-mcp",
+      "version": "1.2.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "FAOSTAT_API_TOKEN",
+          "description": "FAOSTAT JWT access token. Obtain from the FAOSTAT Developer Portal. Optional if FAOSTAT_USERNAME and FAOSTAT_PASSWORD are provided.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "FAOSTAT_USERNAME",
+          "description": "FAOSTAT account email. Used with FAOSTAT_PASSWORD for automatic token refresh. Optional if FAOSTAT_API_TOKEN is provided.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "FAOSTAT_PASSWORD",
+          "description": "FAOSTAT account password. Used with FAOSTAT_USERNAME for token refresh.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
