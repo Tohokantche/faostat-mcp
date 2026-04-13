@@ -237,7 +237,7 @@ async def faostat_get_codes(
         if cached_val:
             return json.dumps(cached_val)
         result = await faostat_get(f"/{lang}/codes/{dimension_id}/{domain_code}")
-        caching_manager.set_data("faostat_get_codes", result)
+        caching_manager.set_data("faostat_get_codes", arg_dict, result)
         return json.dumps(result)
     except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
