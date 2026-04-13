@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Releases from v1.1.0 onwards are generated automatically from [conventional commits](https://www.conventionalcommits.org) by [release-please](https://github.com/googleapis/release-please).
 
+## [1.1.1](https://github.com/berba-q/faostat-mcp/compare/v1.1.0...v1.1.1) (2026-04-13)
+
+
+### Documentation
+
+* add CHANGELOG.md as baseline for release-please automation ([dacc4b8](https://github.com/berba-q/faostat-mcp/commit/dacc4b8e47943bedca7d7d2f8f3a08a6ed483bdc))
+
 ## [1.1.0](https://github.com/berba-q/faostat-mcp/releases/tag/v1.1.0) — 2026-04-13
 
 ### Features
