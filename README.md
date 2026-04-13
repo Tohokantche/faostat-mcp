@@ -4,6 +4,8 @@
 > Query UN food and agriculture statistics with AI — powered by the [Model Context Protocol](https://modelcontextprotocol.io)
 
 [![Version](https://img.shields.io/github/v/release/berba-q/faostat-mcp)](https://github.com/berba-q/faostat-mcp/releases/latest)
+[![PyPI](https://img.shields.io/pypi/v/faostat-mcp)](https://pypi.org/project/faostat-mcp/)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-orange)](https://registry.modelcontextprotocol.io/servers/io.github.berba-q/faostat-mcp)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -66,11 +68,13 @@ The [Model Context Protocol](https://modelcontextprotocol.io) is an open standar
 - Python 3.10+
 - Any MCP-compatible client (Claude Desktop, Cursor, Windsurf, Zed, or a custom agent)
 
-### Option A — Install from PyPI (recommended)
+### Option A — Install via MCP Registry (recommended)
+
+Listed on the [official MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.berba-q/faostat-mcp) — discoverable directly from Claude Desktop, Cursor, and any MCP-compatible client.
 
 ```bash
+# Install with pip or uvx (no virtual env needed):
 pip install faostat-mcp
-# or with uvx (no virtual env needed):
 uvx faostat-mcp
 ```
 

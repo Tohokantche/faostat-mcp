@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.berba-q/faostat-mcp",
   "title": "FAOSTAT MCP",
-  "description": "Query UN FAO food and agriculture statistics for 245 countries — crop production, trade, food security, emissions, and more. 21 tools covering every FAOSTAT endpoint with hybrid caching and built-in disambiguation.",
+  "description": "FAOSTAT data for 245 countries: crops, trade, food security, and emissions via 21 MCP tools.",
   "repository": {
     "url": "https://github.com/berba-q/faostat-mcp",
     "source": "github"
