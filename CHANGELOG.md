@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Releases from v1.1.0 onwards are generated automatically from [conventional commits](https://www.conventionalcommits.org) by [release-please](https://github.com/googleapis/release-please).
 
+## [1.2.0](https://github.com/berba-q/faostat-mcp/compare/v1.1.1...v1.2.0) (2026-04-13)
+
+
+### Features
+
+* Upgrade version to 1.2.0 and implement SQLite disk caching ([901e01a](https://github.com/berba-q/faostat-mcp/commit/901e01adc0e56afd95cf695bad553cdd9666412c))
+
 ## [1.1.1](https://github.com/berba-q/faostat-mcp/compare/v1.1.0...v1.1.1) (2026-04-13)
 
 
