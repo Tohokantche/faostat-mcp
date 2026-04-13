@@ -24,8 +24,12 @@ from .client import (
     faostat_get,
     faostat_post,
     DEFAULT_LANG,
+    BASE_URL,
+    TokenManager,
     _get_token_manager,
     _get_redis_connector,
+    _save_credentials_to_storage,
+    _reset_token_manager,
     HybridCaching,
     FAOSTATAuthError,
     FAOSTATRateLimitError,
@@ -97,7 +101,10 @@ mcp = FastMCP(
         "statistical database covering agriculture, food security, trade, emissions, and more "
         "for ~245 countries. Use these tools to answer questions about global food and agriculture "
         "data. Always start by exploring available groups and domains if you are unsure which "
-        "domain contains the data you need."
+        "domain contains the data you need. "
+        "When you need to find a code by name (e.g. 'production', 'wheat', 'Nigeria'), "
+        "use faostat_search_codes — it tells you whether the match is unambiguous or whether "
+        "you must ask the user to choose before proceeding."
     ),
 )
 
@@ -143,7 +150,8 @@ async def faostat_refresh_token() -> str:
     token-expiry errors. It logs in with the configured credentials
     (FAOSTAT_USERNAME + FAOSTAT_PASSWORD) and obtains a fresh JWT token.
 
-    Requires FAOSTAT_USERNAME and FAOSTAT_PASSWORD to be set in the .env file.
+    Requires FAOSTAT_USERNAME and FAOSTAT_PASSWORD to be configured — either
+    as environment variables or via faostat_setup.
     """
     tm = _get_token_manager()
     try:
@@ -151,6 +159,56 @@ async def faostat_refresh_token() -> str:
         return json.dumps({"status": "ok", "message": "Token refreshed successfully."})
     except FAOSTATAuthError as exc:
         return json.dumps({"status": "error", "message": str(exc)})
+
+
+@mcp.tool()
+async def faostat_setup(username: str, password: str) -> str:
+    """
+    Configure FAOSTAT credentials — call this once to authenticate.
+    After setup, all other tools work automatically across sessions without
+    any manual config file editing.
+
+    The tool validates your credentials against the FAOSTAT API before saving,
+    then stores them securely for future use:
+    - macOS / Windows: stored in the system keychain (if keyring package is installed)
+    - Linux / Docker:  stored in ~/.config/faostat-mcp/credentials.json (mode 600)
+
+    You can register for a free FAOSTAT account at https://www.fao.org/faostat/
+
+    Args:
+        username: Your FAOSTAT account email address.
+        password: Your FAOSTAT account password.
+
+    Returns confirmation of where credentials were saved, or an error with a
+    clear message if authentication failed.
+    """
+    try:
+        # Validate credentials by attempting a real login before storing anything
+        tm = TokenManager(
+            base_url=os.getenv("FAOSTAT_BASE_URL", BASE_URL).rstrip("/"),
+            username=username,
+            password=password,
+        )
+        await tm.force_refresh()  # raises FAOSTATAuthError on bad credentials
+
+        # Persist credentials to keychain / config file
+        stored_at = _save_credentials_to_storage(username, password)
+
+        # Reload the singleton so subsequent tool calls use the new credentials
+        _reset_token_manager()
+
+        return json.dumps({
+            "status": "ok",
+            "message": (
+                f"Credentials validated and saved to {stored_at}. "
+                "All FAOSTAT tools are now ready to use."
+            ),
+        })
+    except FAOSTATAuthError as exc:
+        return json.dumps({
+            "status": "error",
+            "message": f"Authentication failed: {exc} — check your username and password.",
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +337,10 @@ async def faostat_get_codes(
 
         faostat_get_codes(dimension_id='area', domain_code='QCL')
         → Returns country/area codes: 2=Afghanistan, 3=Albania, etc.
+
+    TIP: To find a code by name (e.g. 'production', 'wheat', 'Nigeria'), use
+    faostat_search_codes instead — it returns filtered results and signals whether
+    the match is unambiguous before you proceed to faostat_get_data.
     """
     try:
         arg_dict = {
@@ -303,6 +365,143 @@ async def faostat_get_codes(
             return json.dumps(truncated)
         caching_manager.set_data("faostat_get_codes", arg_dict, result)
         return json.dumps(result)
+    except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
+        return json.dumps({"error": type(exc).__name__, "message": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# Code search / disambiguation
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def faostat_search_codes(
+    domain_code: str,
+    dimension_id: str,
+    query: str,
+    lang: str = DEFAULT_LANG,
+) -> str:
+    """
+    Search codes in a dimension by name — use this BEFORE faostat_get_data when
+    you have a partial or uncertain code name (e.g. 'production', 'wheat', 'Nigeria').
+
+    This tool prevents wrong-code errors by making ambiguity explicit:
+    - Exactly 1 match  → safe to proceed (requires_confirmation=False)
+    - Multiple matches → STOP and ask the user to choose (requires_confirmation=True)
+    - No matches       → broaden your search term
+
+    AGENT INSTRUCTION: When the response contains "requires_confirmation": true,
+    you MUST present ALL entries in the "matches" list to the user and ask them
+    to select one before calling faostat_get_data, faostat_get_rankings, or any
+    other data tool. Do NOT guess or automatically pick the first match.
+
+    Args:
+        domain_code:  Domain code to search within (e.g. 'QCL', 'TM', 'FS').
+        dimension_id: Dimension to search ('element', 'item', 'area', 'year').
+        query:        Partial or full name to search for (case-insensitive substring).
+                      Examples: 'production', 'wheat', 'gross production index'.
+        lang:         Language code (default: 'en').
+
+    Returns a JSON object with one of these shapes:
+
+    Single match — safe to proceed:
+        {"match": {"code": "2510", "label": "Production"},
+         "requires_confirmation": false,
+         "message": "Unique match found. Use code '2510' as the element filter."}
+
+    Multiple matches — MUST ask user before proceeding:
+        {"matches": [{"code": "2510", "label": "Production"},
+                     {"code": "2512", "label": "Gross Production Index Number"}],
+         "requires_confirmation": true,
+         "message": "Multiple matches for 'production' in element/QCL. Ask the user."}
+
+    No matches:
+        {"matches": [], "requires_confirmation": false,
+         "message": "No codes match '...'. Use faostat_get_codes to browse all codes."}
+
+    Examples:
+        faostat_search_codes('QCL', 'element', 'production')
+        → Multiple matches (Production, Gross Production Index) — ask user.
+
+        faostat_search_codes('QCL', 'area', 'nigeria')
+        → Single match for Nigeria — safe to proceed with code '231'.
+    """
+    try:
+        arg_dict = {
+            'domain_code': domain_code,
+            'dimension_id': dimension_id,
+            'query': query,
+            'lang': lang,
+        }
+        cached_val = caching_manager.get_data("faostat_search_codes", arg_dict)
+        if cached_val:
+            return json.dumps(cached_val)
+
+        raw = await faostat_get(f"/{lang}/codes/{dimension_id}/{domain_code}")
+
+        if isinstance(raw, dict):
+            codes_list = raw.get("data", [])
+        elif isinstance(raw, list):
+            codes_list = raw
+        else:
+            codes_list = []
+
+        query_lower = query.strip().lower()
+
+        def _matches(entry: dict) -> bool:
+            return any(
+                query_lower in str(v).lower()
+                for v in entry.values()
+                if isinstance(v, str)
+            )
+
+        def _extract(entry: dict) -> dict:
+            code_val = (
+                entry.get("code") or entry.get("Code")
+                or entry.get("id") or ""
+            )
+            label_val = next(
+                (v for v in entry.values()
+                 if isinstance(v, str) and v != str(code_val) and v.strip()),
+                "",
+            )
+            return {"code": str(code_val), "label": label_val}
+
+        hits = [_extract(e) for e in codes_list if _matches(e)]
+
+        if len(hits) == 1:
+            result = {
+                "match": hits[0],
+                "requires_confirmation": False,
+                "message": (
+                    f"Unique match found. Use code '{hits[0]['code']}' "
+                    f"as the '{dimension_id}' filter in faostat_get_data."
+                ),
+            }
+        elif hits:
+            result = {
+                "matches": hits,
+                "requires_confirmation": True,
+                "message": (
+                    f"Multiple matches found for '{query}' in "
+                    f"{dimension_id}/{domain_code}. "
+                    "You MUST present these options to the user and ask them "
+                    "to choose before calling faostat_get_data or any data tool."
+                ),
+            }
+        else:
+            result = {
+                "matches": [],
+                "requires_confirmation": False,
+                "message": (
+                    f"No codes match '{query}' in {dimension_id}/{domain_code}. "
+                    "Try a different search term, or use faostat_get_codes to "
+                    "browse all available codes for this dimension."
+                ),
+            }
+
+        caching_manager.set_data("faostat_search_codes", arg_dict, result)
+        return json.dumps(result)
+
     except (FAOSTATAuthError, FAOSTATRateLimitError, FAOSTATServerError) as exc:
         return json.dumps({"error": type(exc).__name__, "message": str(exc)})
 
@@ -334,6 +533,10 @@ async def faostat_get_data(
     """
     Fetch statistical data from a FAOSTAT domain.
     This is the primary tool for retrieving actual data values.
+
+    When you do not have an exact item, element, or area code, call
+    faostat_search_codes first. If it returns requires_confirmation=True, you
+    MUST ask the user to choose from the listed options before calling this tool.
 
     IMPORTANT: For large domains, always filter by area/item/year to avoid
     very large responses. Check query size first with faostat_get_datasize.

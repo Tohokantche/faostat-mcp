@@ -46,12 +46,14 @@ The [Model Context Protocol](https://modelcontextprotocol.io) is an open standar
 
 ## Features
 
-- **18 MCP tools** covering every FAOSTAT endpoint (data, metadata, rankings, bulk downloads, reports)
+- **21 MCP tools** covering every FAOSTAT endpoint (data, metadata, rankings, bulk downloads, reports)
 - **245 countries and territories** across dozens of domains: crops, livestock, trade, food security, emissions, forestry, fisheries, and more
 - Built-in **rate limiting** (2 req/s) — safe for the FAOSTAT production API out of the box
 - **Auto-retry** with exponential backoff on transient network errors
 - Rich tool descriptions so the AI knows exactly when and how to call each tool
-- **Hybrid and distributed caching** mechanism for efficiency and higher performance
+- **3-tier hybrid caching** — in-memory (20 min) → SQLite disk (24 h, cross-session) → Redis (optional, 30 min)
+- **Zero-config auth** via `faostat_setup` — store credentials once, never touch a config file again
+- **Disambiguation** via `faostat_search_codes` — agents ask before guessing ambiguous codes
 - Works with **Claude Desktop, Claude Code, Cursor, Windsurf, Zed**, and any MCP-compatible client
 
 ---
@@ -61,11 +63,17 @@ The [Model Context Protocol](https://modelcontextprotocol.io) is an open standar
 ### Prerequisites
 
 - Python 3.10+
-- A [FAOSTAT API token](https://www.fao.org/faostat/en/#developer-portal)
 - Any MCP-compatible client (Claude Desktop, Cursor, Windsurf, Zed, or a custom agent)
 
-### Install
-#### 1. Install the package
+### Option A — Install from PyPI (recommended)
+
+```bash
+pip install faostat-mcp
+# or with uvx (no virtual env needed):
+uvx faostat-mcp
+```
+
+### Option B — Install from source
 
 ```bash
 git clone https://github.com/berba-q/faostat-mcp.git
@@ -73,34 +81,37 @@ cd faostat-mcp
 pip install -e .
 ```
 
-#### 2. **Optional** - install docker desktop on your machine (for an easy set-up of the Redis caching server)
+### Configure credentials
 
-- On Windows use [this link](https://docs.docker.com/desktop/setup/install/windows-install/)
-- On Mac use [this link](https://docs.docker.com/desktop/setup/install/mac-install/)
-- On Linux use [this link](https://docs.docker.com/desktop/setup/install/linux/)
+**Easiest — use the `faostat_setup` tool (no config files needed):**
 
+Once the server is running and connected to your AI client, ask your assistant:
+> "Call faostat_setup with my FAOSTAT username and password."
 
-#### 3. Configure
+The tool validates your credentials against the API, then stores them securely in your system keychain (macOS/Windows) or `~/.config/faostat-mcp/credentials.json` (Linux/Docker). All subsequent sessions authenticate automatically — no env vars or `.env` file required.
+
+**Alternative — environment variables (CI/CD, Docker, advanced):**
 
 ```bash
 cp .env.example .env
-# Edit .env and add your FAOSTAT API token:
-# FAOSTAT_API_TOKEN=your_token_here
-# FAOSTAT_USERNAME=your_username
+# Edit .env:
+# FAOSTAT_API_TOKEN=your_token_here        ← API token, OR
+# FAOSTAT_USERNAME=your_email              ← username + password
 # FAOSTAT_PASSWORD=your_password
-
-# Optional - edit .env and add/use the default REDIS CACHE server config :
-# REDIS_HOST_IP_ADDRESS=your_redis_server_ip
-# REDIS_HOST_PORT_NUMBER=your_redis_server_port
-# REDIS_DATABASE=your_redis_server_database
-# REDIS_USERNAME=your_redis_server_username
-# REDIS_PASSWORD=your_redis_server_password
 ```
-#### 4. **Optional** - use docker to launch a <a href="https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/docker/"> Redis </a> caching server with the default configuration
+
+Register for a free FAOSTAT account at [https://www.fao.org/faostat/](https://www.fao.org/faostat/).
+
+### Optional — Redis caching (multi-user / high-volume deployments)
+
+The server works without Redis (SQLite disk cache is used instead). For shared or high-volume setups, launch Redis via Docker:
 
 ```bash
 docker run -p 6379:6379 -it redis/redis-stack:latest
 ```
+
+Then set `REDIS_HOST_IP_ADDRESS`, `REDIS_HOST_PORT_NUMBER`, and `REDIS_DATABASE` in `.env`.
+
 ---
 
 ## Running the Server
@@ -111,7 +122,7 @@ docker run -p 6379:6379 -it redis/redis-stack:latest
 mcp dev faostat_mcp/server.py
 ```
 
-Opens a browser UI at `http://localhost:5173` where you can browse and test all 18 tools interactively.
+Opens a browser UI at `http://localhost:5173` where you can browse and test all 21 tools interactively.
 
 ### Production mode (stdio transport, for Claude Desktop)
 
@@ -123,9 +134,40 @@ faostat-mcp
 
 ---
 
+## Caching
+
+The server uses a **3-tier cache** to minimise redundant API calls. FAOSTAT data updates at most daily, so most repeated queries are served instantly.
+
+| Tier | TTL | Scope | Notes |
+|------|-----|-------|-------|
+| In-memory | 20 min | Current session | Fastest; reset on server restart |
+| SQLite disk | 24 h | Cross-session | `~/.cache/faostat-mcp/cache.db`; no extra infra |
+| Redis | 30 min | Multi-user shared | Optional; set `REDIS_*` env vars to enable |
+
+Cache lookup order: memory → disk → Redis → API call. A disk or Redis hit promotes the value to memory for the rest of the session.
+
+To disable the disk cache (e.g. on a read-only filesystem), set `FAOSTAT_DISK_CACHE=false`.
+
+---
+
 ## MCP Client Integration
 
-The server speaks standard MCP over stdio, so it works with any compatible client. The JSON config block below is the same across clients — only the config file path differs.
+The server speaks standard MCP over stdio, so it works with any compatible client.
+
+### Recommended config (PyPI install)
+
+```json
+{
+  "mcpServers": {
+    "faostat": {
+      "command": "uvx",
+      "args": ["faostat-mcp"]
+    }
+  }
+}
+```
+
+### Dev / source config
 
 ```json
 {
@@ -144,7 +186,7 @@ The server speaks standard MCP over stdio, so it works with any compatible clien
 
 ### Claude Desktop
 
-Add the block above to:
+Add one of the blocks above to:
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
@@ -175,13 +217,15 @@ Once connected, ask your AI assistant questions like:
 
 Your AI assistant will automatically:
 1. Call `faostat_list_groups` or `faostat_groups_and_domains` to find the right domain
-2. Call `faostat_get_codes` to resolve the correct country, item, and element filter codes
-3. Call `faostat_get_data` or `faostat_get_rankings` with the right parameters
+2. Call `faostat_search_codes` to look up a code by name — if multiple codes match (e.g. "production" matches both *Production* and *Gross Production Index*), the assistant **pauses and asks you to choose** before proceeding
+3. Call `faostat_get_data` or `faostat_get_rankings` with the confirmed codes
 4. Interpret and summarize the results in plain language
 
 ---
 
 ## Available MCP Tools
+
+### Discovery & Metadata
 
 | Tool | Description |
 |------|-------------|
@@ -190,19 +234,32 @@ Your AI assistant will automatically:
 | `faostat_groups_and_domains` | Full domain tree |
 | `faostat_list_domains` | Domains within a group |
 | `faostat_get_dimensions` | Available filters for a domain |
-| `faostat_get_codes` | Country/item/element filter codes |
-| `faostat_get_data` | **Fetch actual statistics** |
-| `faostat_get_datasize` | Estimate query result size |
+| `faostat_get_codes` | Browse all country/item/element filter codes |
+| `faostat_search_codes` | **Search codes by name** — returns `requires_confirmation=true` when multiple codes match, forcing the agent to ask you before proceeding |
 | `faostat_get_definitions` | Domain definitions |
 | `faostat_get_definitions_by_type` | Definitions by type |
 | `faostat_definition_types` | All definition types |
 | `faostat_get_metadata` | Full domain metadata |
 | `faostat_get_metadata_print` | Printable metadata |
-| `faostat_list_bulk_downloads` | Bulk download file listing |
-| `faostat_list_documents` | Related documents |
+
+### Data Retrieval
+
+| Tool | Description |
+|------|-------------|
+| `faostat_get_data` | **Fetch actual statistics** |
+| `faostat_get_datasize` | Estimate query result size before fetching |
 | `faostat_get_rankings` | Top-N country rankings |
 | `faostat_get_report_data` | Report data |
 | `faostat_get_report_headers` | Report column headers |
+| `faostat_list_bulk_downloads` | Bulk download file listing |
+| `faostat_list_documents` | Related documents |
+
+### Authentication
+
+| Tool | Description |
+|------|-------------|
+| `faostat_setup` | **First-time setup** — validate and store credentials securely; subsequent sessions authenticate automatically |
+| `faostat_refresh_token` | Manually refresh the API access token |
 
 ---
 
@@ -211,11 +268,12 @@ Your AI assistant will automatically:
 ```
 faostat-mcp/
 ├── pyproject.toml
+├── smithery.yaml             ← Smithery MCP registry manifest
 ├── .env.example
 ├── mcp_config_example.json   ← AI config snippet
 └── faostat_mcp/
-    ├── server.py             ← FastMCP server + all tool definitions
-    └── client.py             ← Rate-limited HTTP client with auto-retry
+    ├── server.py             ← FastMCP server + all 21 tool definitions
+    └── client.py             ← HTTP client, rate limiting, 3-tier cache, credential storage
 ```
 
 ---
@@ -268,7 +326,8 @@ faostat_get_data('QCL', area='2', item='515', element='2510', year='2024')
 
 - This server targets the **FAOSTAT production API** (`https://faostatservices.fao.org/api/v1`).
 - Rate limit: **2 requests/second**, enforced automatically via token bucket.
-- Responses are cached in-memory (and optionally in Redis) to reduce redundant API calls — see `.env.example` for TTL configuration.
+- Responses are cached across 3 tiers (memory → SQLite disk → Redis) to reduce API calls — see `.env.example` for TTL and size configuration.
+- The SQLite disk cache lives at `~/.cache/faostat-mcp/cache.db` and defaults to 24 h TTL with a 1,000-entry LRU cap. Set `FAOSTAT_DISK_CACHE=false` to disable.
 - For large domains (e.g., Trade Matrix), always apply area, item, and year filters to keep response sizes manageable.
 
 ---

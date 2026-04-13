@@ -1,0 +1,40 @@
+name: Publish to PyPI
+
+# Fires when release-please merges its PR and publishes a GitHub release.
+# release-please.yml handles release PR creation; this workflow handles publishing.
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/faostat-mcp/
+    permissions:
+      id-token: write   # required for PyPI Trusted Publishing (OIDC)
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: pip install build
+
+      - name: Build distribution
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No API token needed — uses OIDC Trusted Publishing.
+        # One-time setup on PyPI (https://pypi.org/manage/account/publishing/):
+        #   PyPI project name: faostat-mcp
+        #   GitHub owner:      berba-q
+        #   Repository:        faostat-mcp
+        #   Workflow filename: publish.yml
+        #   Environment:       pypi

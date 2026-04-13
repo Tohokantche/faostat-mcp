@@ -1,10 +1,21 @@
 {
-  "_comment": "Add this to your AI agent config to enable MCP servers. Replace the example with your actual server configuration.",
+  "_comment": "Use 'faostat' (uvx) after installing via pip. Use 'faostat-dev' if running from a cloned repo.",
   "mcpServers": {
     "faostat": {
+      "_comment": "Recommended: install via 'pip install faostat-mcp' or 'uvx faostat-mcp'",
+      "command": "uvx",
+      "args": ["faostat-mcp"],
+      "env": {
+        "FAOSTAT_API_TOKEN": "your_token_here",
+        "FAOSTAT_BASE_URL": "https://faostatservices.fao.org/api/v1",
+        "FAOSTAT_DEFAULT_LANG": "en"
+      }
+    },
+    "faostat-dev": {
+      "_comment": "Development mode: run from a cloned repo with 'pip install -e .'",
       "command": "python",
       "args": ["-m", "faostat_mcp.server"],
-      "cwd": "path/to/faostat-mcp",
+      "cwd": "/path/to/faostat-mcp",
       "env": {
         "FAOSTAT_API_TOKEN": "your_token_here",
         "FAOSTAT_BASE_URL": "https://faostatservices.fao.org/api/v1",

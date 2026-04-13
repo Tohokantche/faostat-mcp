@@ -6,6 +6,30 @@ build-backend = "setuptools.build_meta"
 name = "faostat-mcp"
 dynamic = ["version"]
 description = "MCP server exposing the full FAOSTAT API to AI assistants"
+readme = "README.md"
+authors = [
+    { name = "Griffiths Obli-Laryea", email = "griffiths.laryea@gmail.com" },
+    { name = "Aurele Gnanha", email = "aurele.gnanha@gmail.com" },
+]
+license = { text = "MIT" }
+keywords = [
+    "mcp", "model-context-protocol", "faostat", "fao",
+    "agriculture", "food-security", "food", "llm", "ai",
+    "data", "un", "unfao", "statistics",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
 requires-python = ">=3.10"
 dependencies = [
     "mcp[cli]>=1.0",
@@ -17,6 +41,13 @@ dependencies = [
     "hiredis>=3.3.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/berba-q/faostat-mcp"
+Repository = "https://github.com/berba-q/faostat-mcp"
+Documentation = "https://github.com/berba-q/faostat-mcp#readme"
+Issues = "https://github.com/berba-q/faostat-mcp/issues"
+Changelog = "https://github.com/berba-q/faostat-mcp/blob/main/CHANGELOG.md"
+
 [project.scripts]
 faostat-mcp = "faostat_mcp.server:main"
 
@@ -26,6 +57,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
 ]
+keyring = ["keyring>=25.0"]
 
 [tool.setuptools.dynamic]
 version = {attr = "faostat_mcp.__version__"}
