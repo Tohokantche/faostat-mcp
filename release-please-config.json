@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "python",
+  "packages": {
+    ".": {
+      "version-file": "faostat_mcp/__init__.py"
+    }
+  },
+  "include-component-in-tag": false,
+  "changelog-sections": [
+    { "type": "feat",     "section": "Features" },
+    { "type": "fix",      "section": "Bug Fixes" },
+    { "type": "perf",     "section": "Performance Improvements" },
+    { "type": "refactor", "section": "Code Refactoring" },
+    { "type": "docs",     "section": "Documentation" },
+    { "type": "test",     "section": "Tests", "hidden": true },
+    { "type": "chore",    "section": "Miscellaneous", "hidden": true }
+  ]
+}

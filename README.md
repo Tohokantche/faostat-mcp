@@ -2,7 +2,7 @@
 
 > Query UN food and agriculture statistics with AI — powered by the [Model Context Protocol](https://modelcontextprotocol.io)
 
-[![Version](https://img.shields.io/badge/version-1.0.2-blue.svg)](https://github.com/berba-q/faostat-mcp/releases)
+[![Version](https://img.shields.io/github/v/release/berba-q/faostat-mcp)](https://github.com/berba-q/faostat-mcp/releases/latest)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -268,7 +268,7 @@ faostat_get_data('QCL', area='2', item='515', element='2510', year='2024')
 
 - This server targets the **FAOSTAT production API** (`https://faostatservices.fao.org/api/v1`).
 - Rate limit: **2 requests/second**, enforced automatically via token bucket.
-- No caching — all responses are fetched live from the FAOSTAT API.
+- Responses are cached in-memory (and optionally in Redis) to reduce redundant API calls — see `.env.example` for TTL configuration.
 - For large domains (e.g., Trade Matrix), always apply area, item, and year filters to keep response sizes manageable.
 
 ---
@@ -284,15 +284,22 @@ faostat_get_data('QCL', area='2', item='515', element='2510', year='2024')
 
 ---
 
+## Contributors
+
+Thanks to everyone who has contributed to this project.
+
+| Contributor | Contribution |
+|---|---|
+| [berba-q](https://github.com/berba-q) | Project author — API client, MCP tool layer, response formatting |
+| [Tohokantche](https://github.com/Tohokantche) | Hybrid caching — in-memory (dict + min-heap TTL) and Redis tiers with graceful fallback |
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
+
 ## Changelog
 
-### v1.0.1 — Production release
-
-- Targeting the FAOSTAT production API (`https://faostatservices.fao.org/api/v1`)
-- 18 MCP tools covering the full FAOSTAT API surface
-- Rate-limited HTTP client (2 req/s) with auto-retry
-- Compatible with Claude Desktop, Claude Code, Cursor, Windsurf, Zed, and any MCP stdio client
-- FastMCP-based server with rich tool descriptions for automatic AI tool selection
+See [CHANGELOG.md](CHANGELOG.md) for a full history of changes, generated automatically from [conventional commits](https://www.conventionalcommits.org).
 
 ---
 
