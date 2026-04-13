@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Releases from v1.1.0 onwards are generated automatically from [conventional commits](https://www.conventionalcommits.org) by [release-please](https://github.com/googleapis/release-please).
 
+## [1.2.1](https://github.com/berba-q/faostat-mcp/compare/v1.2.0...v1.2.1) (2026-04-13)
+
+
+### Bug Fixes
+
+* add workflow_dispatch to allow manual PyPI publish trigger ([487f44e](https://github.com/berba-q/faostat-mcp/commit/487f44e35f3862f10469a06500d25b9534176f61))
+* consolidate publish into release-please workflow to bypass GITHUB_TOKEN event restriction ([cf5f7d2](https://github.com/berba-q/faostat-mcp/commit/cf5f7d2c943bc766ba93bc6bd8acf6b4fba76e3d))
+
 ## [1.2.0](https://github.com/berba-q/faostat-mcp/compare/v1.1.1...v1.2.0) (2026-04-13)
 
 
