@@ -508,9 +508,10 @@ async def test_faostat_get_codes_no_limit_returns_all():
     """faostat_get_codes with default limit=0 returns all codes."""
     codes = [{"code": str(i)} for i in range(300)]
     with patch("faostat_mcp.server.faostat_get", return_value=codes):
-        result = json.loads(await faostat_get_codes(
-            dimension_id="item", domain_code="QCL"
-        ))
+        with patch.object(caching_manager, "get_data", return_value=None):
+            result = json.loads(await faostat_get_codes(
+                dimension_id="item", domain_code="QCL"
+            ))
     assert len(result) == 300
 
 
