@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "faostat-mcp"
-version = "0.1.0"
+dynamic = ["version"]
 description = "MCP server exposing the full FAOSTAT API to AI assistants"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,11 +13,27 @@ dependencies = [
     "pydantic>=2.0",
     "python-dotenv>=1.0",
     "tenacity>=8.2",
+    "redis>=7.3.0",
+    "hiredis>=3.3.1",
 ]
 
 [project.scripts]
 faostat-mcp = "faostat_mcp.server:main"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "faostat_mcp.__version__"}
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["faostat_mcp*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

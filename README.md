@@ -2,14 +2,14 @@
 
 > Query UN food and agriculture statistics with AI — powered by the [Model Context Protocol](https://modelcontextprotocol.io)
 
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/berba-q/faostat-mcp/releases)
+[![Version](https://img.shields.io/badge/version-1.0.2-blue.svg)](https://github.com/berba-q/faostat-mcp/releases)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An MCP (Model Context Protocol) server that exposes the full [FAOSTAT API](https://faostat.fao.org/dev-internal/en/#developer-portal) as tools for AI assistants. Connect any MCP-compatible client — Claude, Cursor, Windsurf, Zed, or your own agent — to the world's most comprehensive database of food, agriculture, fisheries, forestry, and nutrition statistics, covering 245 countries and territories from the UN's Food and Agriculture Organization (FAO).
+An MCP (Model Context Protocol) server that exposes the full [FAOSTAT API](https://www.fao.org/faostat/en/#developer-portal) as tools for AI assistants. Connect any MCP-compatible client — Claude, Cursor, Windsurf, Zed, or your own agent — to the world's most comprehensive database of food, agriculture, fisheries, forestry, and nutrition statistics, covering 245 countries and territories from the United Nations Food and Agriculture Organization (FAO).
 
-**Keywords:** FAOSTAT, MCP server, Model Context Protocol, AI agriculture data, FAO statistics, food security AI, agricultural data Python, UN food data, crop production statistics, Claude, Cursor, Windsurf
+**Keywords:** FAOSTAT, MCP server, Model Context Protocol, AI agriculture data, FAO statistics, food security AI, agricultural data Python, UN data, crop production statistics, Claude, Cursor, Windsurf
 
 ---
 
@@ -48,9 +48,10 @@ The [Model Context Protocol](https://modelcontextprotocol.io) is an open standar
 
 - **18 MCP tools** covering every FAOSTAT endpoint (data, metadata, rankings, bulk downloads, reports)
 - **245 countries and territories** across dozens of domains: crops, livestock, trade, food security, emissions, forestry, fisheries, and more
-- Built-in **rate limiting** (2 req/s) — safe for the FAOSTAT dev API out of the box
+- Built-in **rate limiting** (2 req/s) — safe for the FAOSTAT production API out of the box
 - **Auto-retry** with exponential backoff on transient network errors
 - Rich tool descriptions so the AI knows exactly when and how to call each tool
+- **Hybrid and distributed caching** mechanism for efficiency and higher performance
 - Works with **Claude Desktop, Claude Code, Cursor, Windsurf, Zed**, and any MCP-compatible client
 
 ---
@@ -60,10 +61,11 @@ The [Model Context Protocol](https://modelcontextprotocol.io) is an open standar
 ### Prerequisites
 
 - Python 3.10+
-- A [FAOSTAT API token](https://faostat.fao.org/dev-internal/en/#developer-portal)
+- A [FAOSTAT API token](https://www.fao.org/faostat/en/#developer-portal)
 - Any MCP-compatible client (Claude Desktop, Cursor, Windsurf, Zed, or a custom agent)
 
 ### Install
+#### 1. Install the package
 
 ```bash
 git clone https://github.com/berba-q/faostat-mcp.git
@@ -71,14 +73,34 @@ cd faostat-mcp
 pip install -e .
 ```
 
-### Configure
+#### 2. **Optional** - install docker desktop on your machine (for an easy set-up of the Redis caching server)
+
+- On Windows use [this link](https://docs.docker.com/desktop/setup/install/windows-install/)
+- On Mac use [this link](https://docs.docker.com/desktop/setup/install/mac-install/)
+- On Linux use [this link](https://docs.docker.com/desktop/setup/install/linux/)
+
+
+#### 3. Configure
 
 ```bash
 cp .env.example .env
 # Edit .env and add your FAOSTAT API token:
 # FAOSTAT_API_TOKEN=your_token_here
-```
+# FAOSTAT_USERNAME=your_username
+# FAOSTAT_PASSWORD=your_password
 
+# Optional - edit .env and add/use the default REDIS CACHE server config :
+# REDIS_HOST_IP_ADDRESS=your_redis_server_ip
+# REDIS_HOST_PORT_NUMBER=your_redis_server_port
+# REDIS_DATABASE=your_redis_server_database
+# REDIS_USERNAME=your_redis_server_username
+# REDIS_PASSWORD=your_redis_server_password
+```
+#### 4. **Optional** - use docker to launch a <a href="https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/docker/"> Redis </a> caching server with the default configuration
+
+```bash
+docker run -p 6379:6379 -it redis/redis-stack:latest
+```
 ---
 
 ## Running the Server
@@ -190,7 +212,7 @@ Your AI assistant will automatically:
 faostat-mcp/
 ├── pyproject.toml
 ├── .env.example
-├── mcp_config_example.json   ← Claude Desktop config snippet
+├── mcp_config_example.json   ← AI config snippet
 └── faostat_mcp/
     ├── server.py             ← FastMCP server + all tool definitions
     └── client.py             ← Rate-limited HTTP client with auto-retry
@@ -244,7 +266,7 @@ faostat_get_data('QCL', area='2', item='515', element='2510', year='2024')
 
 ## Limitations & Notes
 
-- This server targets the **FAOSTAT dev environment** (`api-faostat.dev.fao.org`). Data may not be fully up to date with the production database.
+- This server targets the **FAOSTAT production API** (`https://faostatservices.fao.org/api/v1`).
 - Rate limit: **2 requests/second**, enforced automatically via token bucket.
 - No caching — all responses are fetched live from the FAOSTAT API.
 - For large domains (e.g., Trade Matrix), always apply area, item, and year filters to keep response sizes manageable.
@@ -255,7 +277,7 @@ faostat_get_data('QCL', area='2', item='515', element='2510', year='2024')
 
 - [Model Context Protocol](https://modelcontextprotocol.io) — the open standard powering this server
 - [FAOSTAT](https://www.fao.org/faostat/en/) — UN FAO's official statistics portal
-- [FAOSTAT API Docs](https://faostat.fao.org/dev-internal/en/#developer-portal) — developer reference
+- [FAOSTAT API Docs](https://www.fao.org/faostat/en/#developer-portal) — developer reference
 - [Claude Desktop](https://claude.ai/download) — one of the AI assistants this server works with
 - [Cursor](https://www.cursor.com) — AI code editor with MCP support
 - [Windsurf](https://windsurf.com) — AI IDE with MCP support
@@ -264,11 +286,12 @@ faostat_get_data('QCL', area='2', item='515', element='2510', year='2024')
 
 ## Changelog
 
-### v0.1.0 — Initial release
+### v1.0.1 — Production release
 
+- Targeting the FAOSTAT production API (`https://faostatservices.fao.org/api/v1`)
 - 18 MCP tools covering the full FAOSTAT API surface
 - Rate-limited HTTP client (2 req/s) with auto-retry
-- Compatible with Claude Desktop, Cursor, Windsurf, Zed, and any MCP stdio client
+- Compatible with Claude Desktop, Claude Code, Cursor, Windsurf, Zed, and any MCP stdio client
 - FastMCP-based server with rich tool descriptions for automatic AI tool selection
 
 ---
