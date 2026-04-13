@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Releases from v1.1.0 onwards are generated automatically from [conventional commits](https://www.conventionalcommits.org) by [release-please](https://github.com/googleapis/release-please).
 
+## [1.2.2](https://github.com/berba-q/faostat-mcp/compare/v1.2.1...v1.2.2) (2026-04-13)
+
+
+### Bug Fixes
+
+* add MCP Registry server.json and ownership verification comment ([e822734](https://github.com/berba-q/faostat-mcp/commit/e8227346cb74856504c6ff5b982e8910a8b26508))
+
 ## [1.2.1](https://github.com/berba-q/faostat-mcp/compare/v1.2.0...v1.2.1) (2026-04-13)
 
 
