@@ -337,8 +337,15 @@ faostat_get_data('QCL', area='2', item='515', element='2510', year='2024')
 
 ---
 
+## Skills
+
+Want guided analysis workflows on top of this server? Check out [**FAOSTAT Skills**](https://github.com/berba-q/faostat-skills) — 9 platform-agnostic AI skills for country profiles, commodity briefings, trade analysis, climate assessments, data visualization, and more. Works with Claude Code, OpenAI Codex, and any AI assistant that supports the SKILL.md format.
+
+---
+
 ## Related Projects & Resources
 
+- [FAOSTAT Skills](https://github.com/berba-q/faostat-skills) — analysis skills built on top of this MCP server
 - [Model Context Protocol](https://modelcontextprotocol.io) — the open standard powering this server
 - [FAOSTAT](https://www.fao.org/faostat/en/) — UN FAO's official statistics portal
 - [FAOSTAT API Docs](https://www.fao.org/faostat/en/#developer-portal) — developer reference
@@ -358,6 +365,37 @@ Thanks to everyone who has contributed to this project.
 | [Tohokantche](https://github.com/Tohokantche) | Hybrid caching — in-memory (dict + min-heap TTL) and Redis tiers with graceful fallback |
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
+
+## Citation
+
+If you use this tool in academic work or research, please cite it:
+
+**Plain text:**
+> Obli-Laryea, G., & Contributors. (2026). FAOSTAT MCP Server: AI-assisted access to FAOSTAT (v1.2.2) [Computer software]. https://github.com/berba-q/faostat-mcp
+
+**BibTeX:**
+```bibtex
+@software{faostat_mcp,
+  author  = {Obli-Laryea, Griffiths and {Contributors}},
+  title   = {FAOSTAT MCP Server: AI-assisted access to UN food and agriculture statistics},
+  year    = {2026},
+  url     = {https://github.com/berba-q/faostat-mcp},
+  version = {1.2.2}
+}
+```
+
+See the [Contributors](#contributors) section for a full list of authors.
+
+When citing the underlying FAOSTAT data, use the FAO's recommended format with the specific domain:
+
+> FAO, {year}. FAOSTAT: {Domain Name}, http://www.fao.org/faostat/en/#data/{domain_code}
+
+For example:
+> FAO, 2026. FAOSTAT: Crops and Livestock Products, http://www.fao.org/faostat/en/#data/QCL
+
+> FAO, 2026. FAOSTAT: Emissions Totals, http://www.fao.org/faostat/en/#data/GT
 
 ---
 
