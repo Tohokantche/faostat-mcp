@@ -105,7 +105,7 @@ cp .env.example .env
 # FAOSTAT_PASSWORD=your_password
 ```
 
-Register for a free FAOSTAT account at [https://www.fao.org/faostat/](https://www.fao.org/faostat/).
+Register for a free FAOSTAT API account at the [FAOSTAT Developer Portal](https://www.fao.org/faostat/en/#developer-portal).
 
 ### Optional — Redis caching (multi-user / high-volume deployments)
 
